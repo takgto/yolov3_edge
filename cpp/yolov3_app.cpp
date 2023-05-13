@@ -27,8 +27,6 @@
 #include <fstream>
 #include <chrono>
 #include <xir/graph/graph.hpp>
-#include "vart/runner.hpp"
-#include "vart/runner_ext.hpp"
 #include "vitis/ai/collection_helper.hpp"
 #include "common.h"
 #include "utils.h"
@@ -60,7 +58,7 @@ void write_output(const string& name, const int8_t* result, const int& size0) {
     }
 }
 
-void post_process(Mat& img, const vector<int8_t*>& out, const GraphInfo& shapes, 
+void post_process(const Mat& img, const vector<int8_t*>& out, const GraphInfo& shapes, 
 		const float& scale, const int& sHeight, const int& sWidth) {
     vector<vector<float>> boxes;
     char fname[256];
@@ -90,7 +88,7 @@ void post_process(Mat& img, const vector<int8_t*>& out, const GraphInfo& shapes,
     }
 
     /* Restore the correct coordinate frame of the original image */
-    correct_region_boxes(boxes, boxes.size(), img.cols, img.rows, sWidth, sHeight);
+    //correct_region_boxes(boxes, boxes.size(), img.cols, img.rows, sWidth, sHeight);
 
     /* Apply the computation for NMS */
     //cout << "boxes size: " << boxes.size() << endl; // debug
@@ -144,77 +142,34 @@ void setInputPointer(const Mat& frame, int8_t* data, const int& height,
         if(data[i] < 0) data[i] = 127;
     }
 }
-
-int main(const int argc, const char** argv) {
-
-    // Check args
-    if (argc != 3) {
-        cout << "Usage of yolov3: ./resnet50 [model_file] [jpg image]" << endl;
-        // #of images = batch size 
-        return -1;
-    }
-    auto xmodel_file = std::string(argv[1]);
-
-    // read input images
-    cv::Mat img = cv::imread(argv[2]);
-    //cv::imwrite("input.jpg", img);
-    //cv::cvtColor(img, img, cv::COLOR_BGR2RGB);
-    if (img.empty()) {
-        std::cout << "Cannot load image : " << argv[2] << std::endl;
-        return -1;
-    }
-
-    // create dpu runner
-    auto graph = xir::Graph::deserialize(xmodel_file);
-    auto subgraph = get_dpu_subgraph(graph.get());
-    CHECK_EQ(subgraph.size(), 1u)
-          << "yolov3 should have one and only one dpu subgraph." << endl;
-    cout << "create running for subgraph: " << subgraph[0]->get_name() << endl;
-
-    auto attrs = xir::Attrs::create();
-    std::unique_ptr<vart::RunnerExt> runner =
-        vart::RunnerExt::create_runner(subgraph[0], attrs.get());
-
-    // get input & output tensor buffers
+void runYOLO(std::unique_ptr<vart::Runner>& runner, Mat& img) {
     auto inputTensors = cloneTensorBuffer(runner->get_input_tensors());
     auto outputTensors = cloneTensorBuffer(runner->get_output_tensors());
-    auto input_scale = get_input_scale(runner->get_input_tensors()[0]);
-    //cout << "input scale = " << input_scale << endl; // debug
 
-    // make input image vector from cv::Mat
-    //int batchSize = runner->get_input_tensors()[0]->get_shape().at(0);
-    int batchSize = inputTensors[0]->get_shape().at(0);
-    int inHeight = inputTensors[0]->get_shape().at(1);
-    int inWidth = inputTensors[0]->get_shape().at(2);
-    int inChannel = inputTensors[0]->get_shape().at(3);
+    // set input pointer
+    int inHeight = shapes.inTensorList[0].height;
+    int inWidth = shapes.inTensorList[0].width;
+    int inChannel = 3; // fixed
+    int batchSize = 1; // fixed
+    int inSize = inHeight * inWidth * inChannel;
+    int8_t* imageInputs = new int8_t[inSize * batchSize];
+    //float mean[3] = {0, 0, 0};
+    auto input_scale = get_input_scale(runner->get_input_tensors()[0]);
+    Mat image2 = cv::Mat(inHeight, inWidth, CV_8SC3); // CV_8SC3 means 3ch singed char data type 
+    cv::resize(img, image2, Size(inWidth, inHeight), 0, 0, cv::INTER_LINEAR);
+
+    setInputPointer(image2, imageInputs, inHeight, inWidth, inChannel, input_scale);
+ 
     cout << "in_height = " << inHeight << endl;
     cout << "in_width = " << inWidth << endl;
     cout << "in_channel = " << inChannel << endl;
     cout << "batch size = " << batchSize << endl;
     cout << "\n";
 
-    start_time = chrono::system_clock::now();
-
-    int inSize = inHeight * inWidth * inChannel;
-    int8_t* imageInputs = new int8_t[inSize * batchSize];
-    float mean[3] = {0, 0, 0};
-    Mat image2 = cv::Mat(inHeight, inWidth, CV_8SC3); // CV_8SC3 means 3ch singed char data type 
-    cv::resize(img, image2, Size(inWidth, inHeight), 0, 0, cv::INTER_LINEAR);
-
-    setInputPointer(image2, imageInputs, inHeight, inWidth, inChannel, input_scale);
-    
-    //write_output("input.bin", imageInputs, inSize); // for debug
-
-    // get output size
-    shapes.inTensorList = inshapes;
-    shapes.outTensorList = outshapes;
-    getTensorShape(runner.get(), &shapes, 1,
-        {"quant_conv2d_58_fix", "quant_conv2d_66_fix", "quant_conv2d_74_fix"});
-    
+    // set output pointer
     vector<int> output_mapping = shapes.output_mapping;
     auto conf_output_scale =
       get_output_scale(runner->get_output_tensors()[output_mapping[1]]);
-    //cout << "output scale = " << conf_output_scale << std::endl; // debug
 
     // make output vector 
     const int size0 = shapes.outTensorList[0].size;
@@ -227,7 +182,6 @@ int main(const int argc, const char** argv) {
     //cout << "size2 = " << size2 << endl; // debug
     int8_t* result2 = new int8_t[size2*batchSize];
 
-    
     // preparation for execute
     std::vector<std::unique_ptr<vart::TensorBuffer>> inputs, outputs;
     inputs.push_back(std::make_unique<CpuFlatTensorBuffer>(
@@ -260,8 +214,10 @@ int main(const int argc, const char** argv) {
     write_output("out2.bin", result2, size2);
     */
     vector<int8_t *> results = {result0, result1, result2};
-    post_process(image2, results, shapes, conf_output_scale, inHeight, inWidth);
-    cv::imwrite("result.jpg", image2);
+    
+    post_process(img, results, shapes, conf_output_scale, inHeight, inWidth);
+
+    cv::imwrite("result.jpg", img);
 
     end_time = std::chrono::system_clock::now();
     cout << "\npre_process time = " << 
@@ -278,13 +234,57 @@ int main(const int argc, const char** argv) {
 	    std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count() 
 	    << " [mS]" << endl; 
 
-
     cout << "\nDone yolov3." << endl;
 
     delete imageInputs;
     delete[] result0;
     delete[] result1;
     delete[] result2;
+}
+
+int main(const int argc, const char** argv) {
+
+    // Check args
+    if (argc != 3) {
+        cout << "Usage of yolov3: ./resnet50 [model_file] [jpg image]" << endl;
+        // #of images = batch size 
+        return -1;
+    }
+    auto xmodel_file = std::string(argv[1]);
+
+    // read input images
+    cv::Mat img = cv::imread(argv[2]);
+    //cv::imwrite("input.jpg", img);
+    //cv::cvtColor(img, img, cv::COLOR_BGR2RGB);
+    if (img.empty()) {
+        std::cout << "Cannot load image : " << argv[2] << std::endl;
+        return -1;
+    }
+
+    // create dpu runner
+    auto graph = xir::Graph::deserialize(xmodel_file);
+    auto subgraph = get_dpu_subgraph(graph.get());
+    CHECK_EQ(subgraph.size(), 1u)
+          << "yolov3 should have one and only one dpu subgraph." << endl;
+    cout << "create running for subgraph: " << subgraph[0]->get_name() << endl;
+
+    auto attrs = xir::Attrs::create();
+    std::unique_ptr<vart::Runner> runner =
+        vart::Runner::create_runner(subgraph[0], "run");
+    //auto runner = vart::Runner::create_runner(subgraph[0], "run");
+    start_time = chrono::system_clock::now();
+
+    //write_output("input.bin", imageInputs, inSize); // for debug
+    // get in/out tenosrs
+    auto inputTensors = runner->get_input_tensors();
+    auto outputTensors = runner->get_output_tensors();
+    // init the shape info
+    shapes.inTensorList = inshapes;
+    shapes.outTensorList = outshapes;    // get output size
+    getTensorShape(runner.get(), &shapes, 1,
+        {"quant_conv2d_58_fix", "quant_conv2d_66_fix", "quant_conv2d_74_fix"});
+   
+    runYOLO(runner, img);
 
     return 0;
 }

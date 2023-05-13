@@ -91,12 +91,13 @@ void readFrame(const char* fileName) {
         if (!video.read(img)) {
           break;
         }
-        cvtColor(img, img, cv::COLOR_BGR2RGB);
-        Mat image2 = cv::Mat(416, 416, CV_8SC3); // CV_8SC3 means 3ch singed char data type 
-        cv::resize(img, image2, Size(416, 416), 0, 0, cv::INTER_LINEAR);
+        //cvtColor(img, img, cv::COLOR_BGR2RGB);
+        //Mat image2 = cv::Mat(416, 416, CV_8SC3); // CV_8SC3 means 3ch singed char data type 
+        //cv::resize(img, image2, Size(416, 416), 0, 0, cv::INTER_LINEAR);
 
         mtxQueueInput.lock();
-        queueInput.push(make_pair(idxInputImage++, image2));
+        //queueInput.push(make_pair(idxInputImage++, image2));
+        queueInput.push(make_pair(idxInputImage++, img));
         mtxQueueInput.unlock();
       } else {
         usleep(10);
@@ -145,7 +146,7 @@ void displayFrame() {
     }
   }
 }
-
+// for debug
 void write_output(const string& name, const int8_t* result, const int& size0) {
     ofstream ofs ( name, ios_base::binary );
     if (!ofs) {
@@ -186,7 +187,7 @@ void post_process(Mat& img, const vector<int8_t*>& out, const GraphInfo& shapes,
     }
 
     /* Restore the correct coordinate frame of the original image */
-    correct_region_boxes(boxes, boxes.size(), img.cols, img.rows, sWidth, sHeight);
+    //correct_region_boxes(boxes, boxes.size(), img.cols, img.rows, sWidth, sHeight); // don't know why this func is needed
 
     /* Apply the computation for NMS */
     //cout << "boxes size: " << boxes.size() << endl; // debug
@@ -263,12 +264,12 @@ void setInputPointer(vart::Runner *runner, const Mat& frame,
     int size = shapes.inTensorList[0].size;
 
     Mat img = frame.clone();
-    //cvtColor(img, img, cv::COLOR_BGR2RGB);
-    //Mat image2 = cv::Mat(height, width, CV_8SC3); // CV_8SC3 means 3ch singed char data type 
-    //cv::resize(img, image2, Size(width, height), 0, 0, cv::INTER_LINEAR);
+    cvtColor(img, img, cv::COLOR_BGR2RGB);
+    Mat image2 = cv::Mat(height, width, CV_8SC3); // CV_8SC3 means 3ch singed char data type 
+    cv::resize(img, image2, Size(width, height), 0, 0, cv::INTER_LINEAR);
 
     //unsigned char* imdata = img.data;
-    unsigned char* imdata = img.data;
+    unsigned char* imdata = image2.data;
     for(int i = 0; i < size; ++i) {
         float dataf = static_cast<float>(imdata[i]);
         data[i] = static_cast<int>( (dataf*static_cast<float>(scale)/256.0) );

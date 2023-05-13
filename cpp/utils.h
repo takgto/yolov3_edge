@@ -15,10 +15,10 @@
 using namespace std;
 using namespace std::chrono;
 
-//#define CONF 0.5f
-#define CONF 0.5  //TG
-//#define NMS_THRESHOLD 0.05f
-#define NMS_THRESHOLD 0.1f //TG
+//#define CONF 0.5  //TG
+#define CONF 0.3  //prototxt
+//#define NMS_THRESHOLD 0.1f //TG
+#define NMS_THRESHOLD 0.45f //TG
 
 
 const int classificationCnt = 80;
@@ -57,12 +57,15 @@ inline float cal_iou(vector<float> box, vector<float>truth) {
 
 void correct_region_boxes(vector<vector<float>>& boxes, int n,
     int w, int h, int netw, int neth, int relative = 0) {
+// w, h -- original image size (512,256), netw, neth -- model input image (416,416)
+// convert 416x416 into (416 x ###) or (### x 416) with the same aspect ratio
     int new_w=0;
     int new_h=0;
+    //cout << w << "," << h << endl;
 
-    if (((float)netw/w) < ((float)neth/h)) {
-        new_w = netw;
-        new_h = (h * netw)/w;
+    if (((float)netw/w) < ((float)neth/h)) { // 416/512 < 416/256 
+        new_w = netw; // 416
+        new_h = (h * netw)/w; // 256*416/512 --> 208
     } else {
         new_h = neth;
         new_w = (w * neth)/h;
