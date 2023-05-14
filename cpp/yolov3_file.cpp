@@ -58,7 +58,7 @@ void write_output(const string& name, const int8_t* result, const int& size0) {
     }
 }
 
-void post_process(Mat& img, const vector<int8_t*>& out, const GraphInfo& shapes, 
+vector<vector<float>>  post_process(Mat& img, const vector<int8_t*>& out, const GraphInfo& shapes, 
 		const float& scale, const int& sHeight, const int& sWidth) {
     vector<vector<float>> boxes;
     char fname[256];
@@ -95,7 +95,7 @@ void post_process(Mat& img, const vector<int8_t*>& out, const GraphInfo& shapes,
     vector<vector<float>> res = applyNMS(boxes, classificationCnt, NMS_THRESHOLD);
 
     //cout << "boxes size after NMS: " << res.size() << endl;
-    cout << "class conf, class, xmin, ymin, xmax, ymax" << endl;  
+    //cout << "class conf, class, xmin, ymin, xmax, ymax" << endl;  
     float h = img.rows;
     float w = img.cols;
     for(size_t i = 0; i < res.size(); ++i) {
@@ -103,11 +103,11 @@ void post_process(Mat& img, const vector<int8_t*>& out, const GraphInfo& shapes,
         float ymin = (res[i][1] - res[i][3]/2.0) * h + 1.0;
         float xmax = (res[i][0] + res[i][2]/2.0) * w + 1.0;
         float ymax = (res[i][1] + res[i][3]/2.0) * h + 1.0;
-	
+        /*	
 	cout<<res[i][res[i][4] + 6]<<" "; // (res[i][4]=class#)+6(offset) means class_score due to the results of apply NMS.
         cout<<res[i][4] << " "; // most confident class number	
 	cout<<xmin<<" "<<ymin<<" "<<xmax<<" "<<ymax<<endl;
-
+        */
 
         if(res[i][res[i][4] + 6] > CONF ) {
             int type = res[i][4];
@@ -126,8 +126,8 @@ void post_process(Mat& img, const vector<int8_t*>& out, const GraphInfo& shapes,
             }
         }
     }
-
-
+  
+    return res;
 }
 void setInputPointer(const Mat& frame, int8_t* data, const int& height,
 		const int& width, const int& ch, const int& scale) {
@@ -142,7 +142,7 @@ void setInputPointer(const Mat& frame, int8_t* data, const int& height,
         if(data[i] < 0) data[i] = 127;
     }
 }
-void runYOLO(std::unique_ptr<vart::Runner>& runner, Mat& img) {
+void runYOLO(std::unique_ptr<vart::Runner>& runner, Mat& img, ofstream& ofs, string& filename) {
     auto inputTensors = cloneTensorBuffer(runner->get_input_tensors());
     auto outputTensors = cloneTensorBuffer(runner->get_output_tensors());
 
@@ -159,12 +159,13 @@ void runYOLO(std::unique_ptr<vart::Runner>& runner, Mat& img) {
     cv::resize(img, image2, Size(inWidth, inHeight), 0, 0, cv::INTER_LINEAR);
 
     setInputPointer(image2, imageInputs, inHeight, inWidth, inChannel, input_scale);
- 
+    /* 
     cout << "in_height = " << inHeight << endl;
     cout << "in_width = " << inWidth << endl;
     cout << "in_channel = " << inChannel << endl;
     cout << "batch size = " << batchSize << endl;
     cout << "\n";
+    */
 
     // set output pointer
     vector<int> output_mapping = shapes.output_mapping;
@@ -215,10 +216,17 @@ void runYOLO(std::unique_ptr<vart::Runner>& runner, Mat& img) {
     */
     vector<int8_t *> results = {result0, result1, result2};
     
-    post_process(img, results, shapes, conf_output_scale, inHeight, inWidth);
+    vector<vector<float>> res = post_process(img, results, shapes, conf_output_scale, inHeight, inWidth);
 
-    cv::imwrite("result.jpg", img);
+    
+    for(size_t i = 0; i < res.size(); ++i) {
+	// filenam, class_conf, class, xmin, ymin, width, height
+        ofs << filename << " " << res[i][res[i][4]+6] << " " << res[i][4] << " " 
+		               << res[i][0]*inWidth << " " << res[i][1]*inHeight << " "
+		               << res[i][2]*inWidth << " " << res[i][3]*inHeight << endl;
+    }
 
+    /*
     end_time = std::chrono::system_clock::now();
     cout << "\npre_process time = " << 
 	    std::chrono::duration_cast<std::chrono::milliseconds>(pre_end_time - start_time).count() 
@@ -235,6 +243,7 @@ void runYOLO(std::unique_ptr<vart::Runner>& runner, Mat& img) {
 	    << " [mS]" << endl; 
 
     cout << "\nDone yolov3." << endl;
+    */
 
     delete imageInputs;
     delete[] result0;
@@ -246,22 +255,13 @@ int main(const int argc, const char** argv) {
 
     // Check args
     if (argc != 3) {
-        cout << "Usage of yolov3: ./resnet50 [model_file] [jpg image]" << endl;
+        cout << "Usage of yolov3: ./resnet50 [model_file] [filename (list of image files)]" << endl;
         // #of images = batch size 
         return -1;
     }
-    auto xmodel_file = std::string(argv[1]);
-
-    // read input images
-    cv::Mat img = cv::imread(argv[2]);
-    //cv::imwrite("input.jpg", img);
-    //cv::cvtColor(img, img, cv::COLOR_BGR2RGB);
-    if (img.empty()) {
-        std::cout << "Cannot load image : " << argv[2] << std::endl;
-        return -1;
-    }
-
+    bool isOutImg = false;
     // create dpu runner
+    auto xmodel_file = std::string(argv[1]);
     auto graph = xir::Graph::deserialize(xmodel_file);
     auto subgraph = get_dpu_subgraph(graph.get());
     CHECK_EQ(subgraph.size(), 1u)
@@ -272,7 +272,6 @@ int main(const int argc, const char** argv) {
     std::unique_ptr<vart::Runner> runner =
         vart::Runner::create_runner(subgraph[0], "run");
     //auto runner = vart::Runner::create_runner(subgraph[0], "run");
-    start_time = chrono::system_clock::now();
 
     //write_output("input.bin", imageInputs, inSize); // for debug
     // get in/out tenosrs
@@ -284,7 +283,52 @@ int main(const int argc, const char** argv) {
     getTensorShape(runner.get(), &shapes, 1,
         {"quant_conv2d_58_fix", "quant_conv2d_66_fix", "quant_conv2d_74_fix"});
    
-    runYOLO(runner, img);
+    // read image filename from the list file.
+    ifstream ifs(argv[2]);
+    if (ifs.fail()) {
+	cerr << "failed to open list file." << endl;
+	return -1;
+    }
+    // output file
+    ofstream ofs("results.txt");
+    if (ofs.fail()) {
+        cerr << "failed to open resut file" << endl;
+    }
+    start_time = chrono::system_clock::now();
+    string str;
+
+    while (getline(ifs, str)) {
+	cout << str << endl;
+        size_t eth = str.find_last_of(".");
+        string ext = str.substr(eth);
+	//cout << "ext = " << ext << endl;
+       	if ( (ext != ".jpg") & (ext != ".JPG") & (ext != ".png") & (ext != ".PNG") ) {
+            cerr << "file is not image file : " << str << endl;
+	    return -1;
+	}
+        // read input images
+        cv::Mat img = cv::imread(str);
+        if (img.empty()) {
+            cerr << "Cannot load image : " << argv[2] << std::endl;
+            return -1;
+        }
+   
+        runYOLO(runner, img, ofs, str);
+
+	if (isOutImg) {
+	    size_t lastdot = str.find_last_of(".");
+	    string outfile = str.substr(0, lastdot) + "_result.jpg";
+	    cout << outfile << endl;
+	    imwrite(outfile, img);
+	}
+    }
+
+    end_time = std::chrono::system_clock::now();
+    cout << "total proc. time = " << 
+	    std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count() 
+	    << " [mS]" << endl; 
+
+    cout << "\nDone yolov3 filelist." << endl;
 
     return 0;
 }
