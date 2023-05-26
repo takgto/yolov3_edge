@@ -447,14 +447,14 @@ int main(const int argc, const char** argv) {
 
     //write_output("input.bin", imageInputs, inSize); // for debug
     // get in/out tenosrs
-    auto inputTensors = runner->get_input_tensors();
-    auto outputTensors = runner->get_output_tensors();
-    // init the shape info
+    int inputCnt = inputTensors.size();
+    int outputCnt = outputTensors.size();
+    TensorShape inshapes[inputCnt];
+    TensorShape outshapes[outputCnt];
     shapes.inTensorList = inshapes;
     shapes.outTensorList = outshapes;    // get output size
-    getTensorShape(runner.get(), &shapes, 1,
-        {"quant_conv2d_58_fix", "quant_conv2d_66_fix", "quant_conv2d_74_fix"});
-   
+    getTensorShape(runner.get(), &shapes, inputCnt, outputCnt);
+
     array<thread, 6> threadsList = {
         thread(readFrame, argv[2]), thread(displayFrame),
         // thread(runYOLO, runner),

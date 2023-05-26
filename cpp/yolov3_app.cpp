@@ -46,8 +46,8 @@ bool bReading = true;   // flag of reding input frame
 GraphInfo shapes;
 //int inHeight = 416;
 //int inWidth = 416;
-TensorShape inshapes[1];
-TensorShape outshapes[3];
+//TensorShape inshapes[1];
+//TensorShape outshapes[3];
 
 void write_output(const string& name, const int8_t* result, const int& size0) {
     ofstream ofs ( name, ios_base::binary );
@@ -279,10 +279,15 @@ int main(const int argc, const char** argv) {
     auto inputTensors = runner->get_input_tensors();
     auto outputTensors = runner->get_output_tensors();
     // init the shape info
+    int inputCnt = inputTensors.size();
+    int outputCnt = outputTensors.size();
+    TensorShape inshapes[inputCnt];
+    TensorShape outshapes[outputCnt];
     shapes.inTensorList = inshapes;
     shapes.outTensorList = outshapes;    // get output size
-    getTensorShape(runner.get(), &shapes, 1,
-        {"quant_conv2d_58_fix", "quant_conv2d_66_fix", "quant_conv2d_74_fix"});
+    getTensorShape(runner.get(), &shapes, inputCnt, outputCnt);
+    //getTensorShape(runner.get(), &shapes, 1,
+    //    {"quant_conv2d_58_fix", "quant_conv2d_66_fix", "quant_conv2d_74_fix"});
    
     runYOLO(runner, img);
 
