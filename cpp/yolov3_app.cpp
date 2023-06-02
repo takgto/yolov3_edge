@@ -35,6 +35,8 @@ using namespace std;
 using namespace cv;
 using namespace std::chrono;
 
+const bool Lbox_resize=false;
+
 chrono::system_clock::time_point start_time, end_time, pre_end_time, dpu_end_time;
 
 #define INPUT_NODE "layer0_conv"
@@ -88,8 +90,9 @@ void post_process(Mat& img, const vector<int8_t*>& out, const GraphInfo& shapes,
     }
 
     /* Restore the correct coordinate frame of the original image */
-    //correct_region_boxes(boxes, boxes.size(), img.cols, img.rows, sWidth, sHeight);
-
+    if (Lbox_resize) {
+        correct_region_boxes(boxes, boxes.size(), img.cols, img.rows, sWidth, sHeight);
+    }
     /* Apply the computation for NMS */
     //cout << "boxes size: " << boxes.size() << endl; // debug
     vector<vector<float>> res = applyNMS(boxes, classificationCnt, NMS_THRESHOLD);
@@ -129,13 +132,48 @@ void post_process(Mat& img, const vector<int8_t*>& out, const GraphInfo& shapes,
 
 
 }
-void setInputPointer(const Mat& frame, int8_t* data, const int& height,
+
+// Use letterbox_image() same as darknet
+void setInputImageForYOLO(const Mat& img, int8_t* data, const int& height,
+		          const int& width, const int& ch, const int& scale) {
+    const int size = width*height*ch;
+
+    image img_new = load_image_cv(img); // copy of input image (type image) and BGR-->RGB
+    cout << "img width = " << img_new.w << endl;
+    cout << "img height = " << img_new.h << endl;
+
+    image img_yolo = letterbox_image(img_new, width, height); 
+    cout << "resized width = " << img_yolo.w << endl;
+    cout << "resized height = " << img_yolo.h << endl;
+
+    vector<float> bb(size);
+    for(int b = 0; b < height; ++b) {
+        for(int c = 0; c < width; ++c) {
+            for(int a = 0; a < ch; ++a) {
+                bb[b*width*3 + c*3 + a] = img_yolo.data[a*height*width + b*width + c];
+                //bb[b*width*ch + c*ch + a] = img_new.data[a*height*width + b*width + c]; // (c, h, w) -->(h, w, c) 
+            }
+        }
+    }
+
+    for(int i = 0; i < size; ++i) {
+        data[i] = int(bb.data()[i]*scale);
+        if(data[i] < 0) data[i] = 127;
+    }
+
+    free_image(img_new);
+    free_image(img_yolo);
+
+}
+
+void setInputPointer(const Mat& img, int8_t* data, const int& height,
 		const int& width, const int& ch, const int& scale) {
     int size = height * width * ch; 
 
-    Mat img = frame.clone();
-    cvtColor(img, img, cv::COLOR_BGR2RGB);
-    unsigned char* imdata = img.data;
+    Mat img2 = cv::Mat(height, width, CV_8SC3); // CV_8SC3 means 3ch singed char data type 
+    cv::resize(img, img2, Size(width, height), 0, 0, cv::INTER_LINEAR);
+    cvtColor(img2, img2, cv::COLOR_BGR2RGB);
+    unsigned char* imdata = img2.data;
    for(int i = 0; i < size; ++i) {
 	float dataf = static_cast<float>(imdata[i]);
         data[i] = static_cast<int>( (dataf*static_cast<float>(scale)/256.0) );
@@ -155,11 +193,17 @@ void runYOLO(std::unique_ptr<vart::Runner>& runner, Mat& img) {
     int8_t* imageInputs = new int8_t[inSize * batchSize];
     //float mean[3] = {0, 0, 0};
     auto input_scale = get_input_scale(runner->get_input_tensors()[0]);
-    Mat image2 = cv::Mat(inHeight, inWidth, CV_8SC3); // CV_8SC3 means 3ch singed char data type 
-    cv::resize(img, image2, Size(inWidth, inHeight), 0, 0, cv::INTER_LINEAR);
+    //Mat image2 = cv::Mat(inHeight, inWidth, CV_8SC3); // CV_8SC3 means 3ch singed char data type 
+    //cv::resize(img, image2, Size(inWidth, inHeight), 0, 0, cv::INTER_LINEAR);
 
-    setInputPointer(image2, imageInputs, inHeight, inWidth, inChannel, input_scale);
- 
+    //setInputPointer(image2, imageInputs, inHeight, inWidth, inChannel, input_scale); // old
+    if (Lbox_resize) {
+        /* Use letterbox image() same as darknet */
+        setInputImageForYOLO(img, imageInputs, inHeight, inWidth, inChannel, input_scale);
+    } else {
+        setInputPointer(img, imageInputs, inHeight, inWidth, inChannel, input_scale); // new
+    }
+
     cout << "in_height = " << inHeight << endl;
     cout << "in_width = " << inWidth << endl;
     cout << "in_channel = " << inChannel << endl;

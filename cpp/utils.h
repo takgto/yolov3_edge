@@ -18,10 +18,10 @@ using namespace std::chrono;
 //#define CONF 0.5  //TG
 #define CONF 0.3  //prototxt
 //#define NMS_THRESHOLD 0.1f //TG
-#define NMS_THRESHOLD 0.45f //TG
+#define NMS_THRESHOLD 0.45f //prototxt
 
 
-const int classificationCnt = 80;
+const int classificationCnt = 3;
 const int anchorCnt = 3;
 
 typedef struct {
