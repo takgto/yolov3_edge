@@ -15,3 +15,5 @@ yolov3 (*.xmodel) (input file)
 Read video file (*.webm only at this moment) and detect object, then output video with detected bbox. Currently, FSP is dominated by imshow and waitkey command (that is bottle neck), which would be imporved by OpenGL libray in near future. Also ./build.sh can be used by renaming source file.
 Usage:
 yolov3 (*.xmodel) (input movie, *.webm file only)
+
+yolov3_video2 -- exec file with threads programming using concurrent queue. thread_test2.cpp would be helpful to understand the process. 
