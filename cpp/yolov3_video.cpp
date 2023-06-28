@@ -12,8 +12,12 @@
 #include <thread>
 #include <sys/stat.h>
 #include <dirent.h>
-//#include <dnndk/dnndk.h>
 #include <opencv2/opencv.hpp>
+
+// new include file related to thread handlig
+#include <future>
+#include <condition_variable>
+#include <utility>
 
 // next include files from VART program
 #include <stdio.h>
@@ -42,7 +46,7 @@ chrono::system_clock::time_point start_time, end_time, pre_end_time, dpu_end_tim
 int idxInputImage = 0;  // frame index of input video
 int idxShowImage = 0;   // next frame index to be displayed
 bool bReading = true;   // flag of reding input frame
-bool bExiting = false;
+//bool bExiting = false; // Not use
 
 typedef pair<int, Mat> imagePair;
 class paircomp {
@@ -61,9 +65,9 @@ mutex mtxQueueInput;
 // mutex for protecFtion of display frmaes queue
 mutex mtxQueueShow;
 // input frames queue
-queue<pair<int, Mat>> queueInput;
+queue<pair<int, Mat>> queueInput; // queue of FIFO
 // display frames queue
-priority_queue<imagePair, vector<imagePair>, paircomp> queueShow;
+priority_queue<imagePair, vector<imagePair>, paircomp> queueShow; // priority queue by index comp.
 
 GraphInfo shapes;
 //int inHeight = 416;
@@ -71,81 +75,113 @@ GraphInfo shapes;
 TensorShape inshapes[1];
 TensorShape outshapes[3];
 
-void readFrame(const char* fileName) {
-  static int loop = 3;
+template<typename T>
+class concurrent_queue {
+public:
+    typedef typename std::queue<T>::size_type size_type;
+private:
+    std::queue<T> queue_;
+    size_type capacity_;
+
+    std::mutex mtx_;
+    std::condition_variable can_pop_;
+    std::condition_variable can_push_;
+public:
+    concurrent_queue(size_type capacity) : capacity_(capacity) {
+        if ( capacity_ == 0 ) {
+            throw std::invalid_argument("capacity cannot be zero");
+        }
+    }
+
+    void push(const T& value) {
+        std::unique_lock<std::mutex> guard(mtx_);
+        // wait 'can set'
+        can_push_.wait(guard, [this]() { return queue_.size() < capacity_; });
+        queue_.push(value);
+        // notify 'can get'
+        can_pop_.notify_one();
+    }
+
+    T pop() {
+        std::unique_lock<std::mutex> guard(mtx_);
+        // wait 'can get'
+        can_pop_.wait(guard, [this]() { return !queue_.empty(); });
+        T value = queue_.front();
+        queue_.pop();
+        // notify 'can set'
+        can_push_.notify_one();
+        return value;
+    }
+    int size() {return queue_.size();}
+};
+
+void readFrame(const char* fileName, concurrent_queue<imagePair>& out) {
+  static int loop = 3; // video end of three times play
   VideoCapture video;
   string videoFile = fileName;
   start_time = chrono::system_clock::now();
 
   while (loop > 0) {
-    loop--;
+    //loop--; //infinite loop
     if (!video.open(videoFile)) {
       cout << "Fail to open specified video file:" << videoFile << endl;
       exit(-1);
     }
 
     while (true) {
-      usleep(20000);
+      //usleep(20000); // No performanec increase if 20000 --> 2000
       Mat img;
-      if (queueInput.size() < 30) {
-        if (!video.read(img)) {
-          break;
-        }
-        //cvtColor(img, img, cv::COLOR_BGR2RGB);
-        //Mat image2 = cv::Mat(416, 416, CV_8SC3); // CV_8SC3 means 3ch singed char data type 
-        //cv::resize(img, image2, Size(416, 416), 0, 0, cv::INTER_LINEAR);
-
-        mtxQueueInput.lock();
-        //queueInput.push(make_pair(idxInputImage++, image2));
-        queueInput.push(make_pair(idxInputImage++, img));
-        mtxQueueInput.unlock();
-      } else {
-        usleep(10);
+      if (!video.read(img)) {
+        break;
       }
+      //cvtColor(img, img, cv::COLOR_BGR2RGB);
+      //Mat image2 = cv::Mat(416, 416, CV_8SC3); // CV_8SC3 means 3ch singed char data type 
+      //cv::resize(img, image2, Size(416, 416), 0, 0, cv::INTER_LINEAR);
+
+      // mtxQueueInput.lock();
+      //queueInput.push(make_pair(idxInputImage++, image2));
+      auto pair = make_pair(idxInputImage++, img);
+      out.push(pair);
+      //cout << "index=" << idxInputImage << "\n" << flush;
+      //cout << "q size=" << queueInput.size() << "\n" << flush;
+      //  mtxQueueInput.unlock();
     }
 
     video.release();
   }
-  bExiting = true;
+  //bExiting = true;
+  exit(0);
 }
 
-void displayFrame() {
+void displayFrame(concurrent_queue<imagePair>& in) {
   Mat frame;
 
   while (true) {
-    if (bExiting) break;
-    mtxQueueShow.lock();
-
-    if (queueShow.empty()) {
-      mtxQueueShow.unlock();
-      usleep(10);
-    } else if (idxShowImage == queueShow.top().first) {
-      auto show_time = chrono::system_clock::now();
-      stringstream buffer;
-      frame = queueShow.top().second;
+      auto pairIndexImg = in.pop();
+      frame = pairIndexImg.second;
       if (frame.rows <= 0 || frame.cols <= 0) {
-        mtxQueueShow.unlock();
-        continue;
+          mtxQueueShow.unlock();
+          continue;
       }
-      auto dura = (duration_cast<microseconds>(show_time - start_time)).count();
-      buffer << fixed << setprecision(1)
-             << (float)queueShow.top().first / (dura / 1000000.f);
-      string a = buffer.str() + " FPS";
-      cv::putText(frame, a, cv::Point(10, 15), 1, 1, cv::Scalar{0, 0, 240}, 1);
-      cv::imshow("ADAS Detection@Xilinx DPU", frame);
 
-      idxShowImage++;
-      queueShow.pop();
-      mtxQueueShow.unlock();
+      auto show_time = chrono::system_clock::now();
+      auto dura = (duration_cast<microseconds>(show_time - start_time)).count();
+      stringstream buffer;
+      buffer << fixed << setprecision(1)
+             << (float)pairIndexImg.first / (dura / 1000000.f);
+      string a = buffer.str() + " FPS";
+      putText(frame, a, cv::Point(10, 15), 1, 1, cv::Scalar{0, 0, 240}, 1);
+      //cout << "FPS=" << buffer.str() << "\n" << flush;
+      imshow("YOLOv3 Detection@Xilinx DPU", frame);
+      //cout << "idx show=" << pairIndexImg.first << ", dura=" << dura << "\n" << flush;
       if (waitKey(1) == 'q') {
-        bReading = false;
-        exit(0);
+          bReading = false; // usually true, set false only when 'q' key is pushed.
+          exit(0);
       }
-    } else {
-      mtxQueueShow.unlock();
-    }
+      //waitKey(1); // a little bit faster than above if condition.
   }
 }
+
 // for debug
 void write_output(const string& name, const int8_t* result, const int& size0) {
     ofstream ofs ( name, ios_base::binary );
@@ -277,7 +313,7 @@ void setInputPointer(vart::Runner *runner, const Mat& frame,
     }
 }
 
-void runYOLO(vart::Runner *runner) {
+void runYOLO(vart::Runner *runner, concurrent_queue<imagePair>& in, concurrent_queue<imagePair>& out) {
     auto inputTensors = cloneTensorBuffer(runner->get_input_tensors());
     auto outputTensors = cloneTensorBuffer(runner->get_output_tensors());
 
@@ -322,23 +358,7 @@ void runYOLO(vart::Runner *runner) {
     std::vector<std::unique_ptr<vart::TensorBuffer>> inputs, outputs;
     std::vector<vart::TensorBuffer*> inputsPtr, outputsPtr;
     while (true) {
-        pair<int, Mat> pairIndexImage;
-
-        mtxQueueInput.lock();
-        if (queueInput.empty()) {
-            mtxQueueInput.unlock();
-            if (bExiting) break;
-            if (bReading) {
-                continue;
-            } else {
-                break;
-            }
-        } else {
-        /* get an input frame from input frames queue */
-            pairIndexImage = queueInput.front();
-            queueInput.pop();
-            mtxQueueInput.unlock();
-        }
+        auto pairIndexImage = in.pop();
 
         setInputPointer(runner, pairIndexImage.second, imageInputs, mean, input_scale);
 
@@ -373,11 +393,8 @@ void runYOLO(vart::Runner *runner) {
         vector<int8_t *> results = {result0, result1, result2};
         post_process(pairIndexImage.second, results, shapes, conf_output_scale, inHeight, inWidth);
         //cv::imwrite("result.jpg", image2);
-	mtxQueueShow.lock();
-
-        /* push the image into display frame queue */
-        queueShow.push(pairIndexImage);
-        mtxQueueShow.unlock();
+        out.push(pairIndexImage);
+      
         inputs.clear();
         outputs.clear();
         inputsPtr.clear();
@@ -408,7 +425,7 @@ void runYOLO(vart::Runner *runner) {
 }
 
 int main(const int argc, const char** argv) {
-
+    cout << "concurrency = " << std::thread::hardware_concurrency() << std::endl;
     // Check args
     if (argc != 3) {
         cout << "Usage of yolov3: ./resnet50 [model_file] [jpg image]" << endl;
@@ -444,6 +461,8 @@ int main(const int argc, const char** argv) {
         vart::Runner::create_runner(subgraph[0], "run");
     //auto runner = vart::Runner::create_runner(subgraph[0], "run");
     //start_time = chrono::system_clock::now();
+    auto inputTensors = runner->get_input_tensors();
+    auto outputTensors = runner->get_output_tensors();
 
     //write_output("input.bin", imageInputs, inSize); // for debug
     // get in/out tenosrs
@@ -455,11 +474,14 @@ int main(const int argc, const char** argv) {
     shapes.outTensorList = outshapes;    // get output size
     getTensorShape(runner.get(), &shapes, inputCnt, outputCnt);
 
+    concurrent_queue<imagePair> fr(30), shw(30);
     array<thread, 6> threadsList = {
-        thread(readFrame, argv[2]), thread(displayFrame),
-        // thread(runYOLO, runner),
-        thread(runYOLO, runner.get()), thread(runYOLO, runner1.get()),
-        thread(runYOLO, runner2.get()), thread(runYOLO, runner3.get())
+        thread(readFrame, argv[2], ref(fr)), 
+	thread(displayFrame, ref(shw)),
+        thread(runYOLO, runner.get(), ref(fr), ref(shw)), 
+	thread(runYOLO, runner1.get(), ref(fr), ref(shw)),
+	thread(runYOLO, runner2.get(), ref(fr), ref(shw)),
+	thread(runYOLO, runner3.get(), ref(fr), ref(shw))
     };
 
     for (int i = 0; i < 6; i++) {
