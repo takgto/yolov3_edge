@@ -155,10 +155,12 @@ void readFrame(const char* fileName, concurrent_queue<imagePair>& out) {
 
 void displayFrame(concurrent_queue<imagePair>& in) {
   Mat frame;
+  int index;
 
   while (true) {
       auto pairIndexImg = in.pop();
       frame = pairIndexImg.second;
+      index = pairIndexImg.first;
       if (frame.rows <= 0 || frame.cols <= 0) {
           mtxQueueShow.unlock();
           continue;
@@ -172,11 +174,13 @@ void displayFrame(concurrent_queue<imagePair>& in) {
       string a = buffer.str() + " FPS";
       putText(frame, a, cv::Point(10, 15), 1, 1, cv::Scalar{0, 0, 240}, 1);
       //cout << "FPS=" << buffer.str() << "\n" << flush;
-      imshow("YOLOv3 Detection@Xilinx DPU", frame);
-      //cout << "idx show=" << pairIndexImg.first << ", dura=" << dura << "\n" << flush;
-      if (waitKey(1) == 'q') {
-          bReading = false; // usually true, set false only when 'q' key is pushed.
-          exit(0);
+      if (index % 2) {
+          imshow("YOLOv3 Detection@Xilinx DPU", frame);
+          //cout << "idx show=" << pairIndexImg.first << ", dura=" << dura << "\n" << flush;
+          if (waitKey(1) == 'q') {
+              bReading = false; // usually true, set false only when 'q' key is pushed.
+              exit(0);
+          }
       }
       //waitKey(1); // a little bit faster than above if condition.
   }
