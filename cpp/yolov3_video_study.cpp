@@ -39,6 +39,8 @@ using namespace std;
 using namespace cv;
 using namespace std::chrono;
 
+bool Lbox_on = false;
+
 chrono::system_clock::time_point start_time, end_time, pre_end_time, dpu_end_time;
 
 int idxInputImage = 0;  // frame index of input video
@@ -121,12 +123,17 @@ void readFrame(const char* fileName, concurrent_queue<imagePair>& out) {
 
     while (true) {
       //usleep(20000); // No performanec increase if 20000 --> 2000
+      //auto start_readtime = chrono::system_clock::now();
       Mat img;
       if (!video.read(img)) {
         break;
       }
 
       auto pair = make_pair(idxInputImage++, img);
+      end_time =  chrono::system_clock::now();
+      //cout << "\nread img time= " << 
+      //	    std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_readtime).count() 
+      //	    << " [mS]" << endl; 
       out.push(pair);
       //cout << "index=" << idxInputImage << "\n" << flush;
       //cout << "q size=" << queueInput.size() << "\n" << flush;
@@ -140,7 +147,6 @@ void readFrame(const char* fileName, concurrent_queue<imagePair>& out) {
 void displayFrame(concurrent_queue<imagePair>& in) {
   Mat frame;
   int index;
-
   while (true) {
       auto pairIndexImg = in.pop();
       frame = pairIndexImg.second;
@@ -157,15 +163,16 @@ void displayFrame(concurrent_queue<imagePair>& in) {
       string a = buffer.str() + " FPS";
       putText(frame, a, cv::Point(10, 15), 1, 1, cv::Scalar{0, 0, 240}, 1);
       //cout << "FPS=" << buffer.str() << "\n" << flush;
-      if (index % 2 >=0) {
-          //cout << "index = " << index << flush;
-          imshow("YOLOv3 Detection@Xilinx DPU", frame);
-          //cout << "idx show=" << pairIndexImg.first << ", dura=" << dura << "\n" << flush;
-          if (waitKey(1) == 'q') {
-              bReading = false; // usually true, set false only when 'q' key is pushed.
-              exit(0);
-          }
+      //cout << "index = " << index << flush;
+      imshow("YOLOv3 Detection@Xilinx DPU", frame);
+      if (waitKey(1) == 'q') {
+          bReading = false; // usually true, set false only when 'q' key is pushed.
+          exit(0);
       }
+      auto disp_end_time = chrono::system_clock::now();
+      //cout << "\ndisplay time= " << 
+      //	    std::chrono::duration_cast<std::chrono::milliseconds>(disp_end_time - show_time).count() 
+      //     << " [mS]" << flush;
   }
 }
 
@@ -210,8 +217,9 @@ void post_process(Mat& img, const vector<int8_t*>& out, const GraphInfo& shapes,
     }
 
     /* Restore the correct coordinate frame of the original image */
-    //correct_region_boxes(boxes, boxes.size(), img.cols, img.rows, sWidth, sHeight); // don't know why this func is needed
-
+    if (Lbox_on) {
+        correct_region_boxes(boxes, boxes.size(), img.cols, img.rows, sWidth, sHeight);
+    }
     /* Apply the computation for NMS */
     //cout << "boxes size: " << boxes.size() << endl; // debug
     vector<vector<float>> res = applyNMS(boxes, classificationCnt, NMS_THRESHOLD);
@@ -251,8 +259,8 @@ void post_process(Mat& img, const vector<int8_t*>& out, const GraphInfo& shapes,
 
 
 }
-/*
-void setInputImageForYOLO(int8_t* data, const Mat& frame, float* mean, 
+
+void setInputImageForYOLO(vart::Runner *runner, const Mat& frame, int8_t* data, 
 		float input_scale) {
   Mat img_copy;
   int width = shapes.inTensorList[0].width;
@@ -279,9 +287,9 @@ void setInputImageForYOLO(int8_t* data, const Mat& frame, float* mean,
   free_image(img_new);
   free_image(img_yolo);
 }
-*/
-void setInputPointer(vart::Runner *runner, const Mat& frame, 
-		int8_t* data, const float* mean, const int& scale) {
+
+void setInputPointer(vart::Runner *runner, const Mat& frame, int8_t* data, 
+		const int& scale) {
     int width = shapes.inTensorList[0].width;
     int height = shapes.inTensorList[0].height;
     int size = shapes.inTensorList[0].size;
@@ -301,6 +309,7 @@ void setInputPointer(vart::Runner *runner, const Mat& frame,
 }
 
 void runYOLO(vart::Runner *runner, concurrent_queue<imagePair>& in, concurrent_queue<imagePair>& out) {
+    
     auto inputTensors = cloneTensorBuffer(runner->get_input_tensors());
     auto outputTensors = cloneTensorBuffer(runner->get_output_tensors());
 
@@ -343,8 +352,13 @@ void runYOLO(vart::Runner *runner, concurrent_queue<imagePair>& in, concurrent_q
     std::vector<vart::TensorBuffer*> inputsPtr, outputsPtr;
     while (true) {
         auto pairIndexImage = in.pop();
-
-        setInputPointer(runner, pairIndexImage.second, imageInputs, mean, input_scale);
+        auto yolo_start_time = std::chrono::system_clock::now(); //runYOLO starttime
+        
+        if (Lbox_on) {
+            setInputImageForYOLO(runner, pairIndexImage.second, imageInputs, input_scale);
+	} else {
+            setInputPointer(runner, pairIndexImage.second, imageInputs, input_scale);
+        }
 
         // preparation for execute
         inputs.push_back(std::make_unique<CpuFlatTensorBuffer>(
@@ -378,6 +392,10 @@ void runYOLO(vart::Runner *runner, concurrent_queue<imagePair>& in, concurrent_q
         post_process(pairIndexImage.second, results, shapes, conf_output_scale, inHeight, inWidth);
         //cv::imwrite("result.jpg", image2);
         out.push(pairIndexImage);
+        auto yolo_end_time = std::chrono::system_clock::now();
+        //cout << "\nrunYOLO time= " << 
+	//    std::chrono::duration_cast<std::chrono::milliseconds>(yolo_end_time - yolo_start_time).count() 
+	//    << " [mS]" << endl; 
       
         inputs.clear();
         outputs.clear();
@@ -388,8 +406,8 @@ void runYOLO(vart::Runner *runner, concurrent_queue<imagePair>& in, concurrent_q
     delete[] result0;
     delete[] result1;
     delete[] result2;
+
     /*
-    end_time = std::chrono::system_clock::now();
     cout << "\npre_process time = " << 
 	    std::chrono::duration_cast<std::chrono::milliseconds>(pre_end_time - start_time).count() 
 	    << " [mS]" << endl; 
@@ -454,9 +472,7 @@ int main(const int argc, const char** argv) {
         thread(readFrame, argv[2], ref(fr)), 
 	thread(displayFrame, ref(shw)),
         thread(runYOLO, runner.get(), ref(fr), ref(shw)), 
-	thread(runYOLO, runner1.get(), ref(fr), ref(shw)),
-	//thread(runYOLO, runner2.get(), ref(fr), ref(shw)),
-	//thread(runYOLO, runner3.get(), ref(fr), ref(shw))
+        thread(runYOLO, runner1.get(), ref(fr), ref(shw)), 
     };
 
     for (int i = 0; i < 4; i++) {
