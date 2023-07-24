@@ -38,7 +38,7 @@ $CXX -O2 -fno-inline -I. \
      -L=/install/Debug/lib \
      -L=/install/Release/lib \
      -I$PWD/../common  -o $name -std=c++17 \
-     $PW/yolov3_video.cc \
+     $PW/yolov3_video_subject1.cc \
      $PWD/../common/common.cpp  \
      -Wl,-rpath=$PWD/lib \
      -lvart-runner \
@@ -61,7 +61,7 @@ $CXX -O2 -fno-inline -I. \
      -Wl,-rpath=${install_prefix_default}.Debug/lib \
      -Wl,-rpath=${install_prefix_default}.Release/lib \
      -I$PWD/../common  -o $name -std=c++17 \
-     $PWD/yolov3_video.cpp \
+     $PWD/yolov3_video_subject1.cpp \
      $PWD/../common/common.cpp  \
      -Wl,-rpath=$PWD/lib \
      -lvart-runner \
