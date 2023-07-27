@@ -81,18 +81,12 @@ void correct_region_boxes(vector<vector<float>>& boxes, int n,
 void detect(vector<vector<float>> &boxes, vector<float> result,
             int channel, int height, int weight, int num, int sh, int sw);
 
-void detect(vector<vector<float>> &boxes, const int8_t* result,
+void detect_tiny(vector<vector<float>> &boxes, const int8_t* result,
     int channel, int height, int width, int num, int sHeight, int sWidth, const float& scale) {
-    vector<float> biases{116,90, 156,198, 373,326, 30,61, 62,45, 59,119, 10,13, 16,30, 33,23};
+    vector<float> biases{10,14, 23,27, 37,58, 81,82, 135,169, 344,319}; // yolov3-tiny
     int conf_box = 5 + classificationCnt;
     float swap[height * width][anchorCnt][conf_box];
-    /* for debug
-    cout << "height = " << height << endl;
-    cout << "widht = " << width << endl;
-    cout << "channel = " << channel << endl;
-    cout << "sHeight = " << sHeight << endl;
-    cout << "sWidth = " << sWidth << endl;
-    */
+   
     for (int h = 0; h < height; ++h) {
         for (int w = 0; w < width; ++w) {
             for (int c = 0; c < channel; ++c) {
@@ -108,22 +102,7 @@ void detect(vector<vector<float>> &boxes, const int8_t* result,
                 if (obj_score < CONF)
                     continue;
                 vector<float> box;
-		/* for debug
-                float grid = sHeight/height;
-                float cx = (w + sigmoid(swap[h * width + w][c][0]))*grid;
-                float cy = (h + sigmoid(swap[h * width + w][c][1]))*grid;
-	        float cw = biases[2*c + 2*anchorCnt*num]*exp(swap[h * width + w][c][2]);
-	        float ch = biases[2*c + 2*anchorCnt*num + 1]*exp(swap[h * width + w][c][3]);
-		float xmin = cx - cw/2.0;
-		float xmax = cx + cw/2.0;
-		float ymin = cy - ch/2.0;
-		float ymax = cy + ch/2.0;
-		cout << "anchor0, anchor1 = " << biases[2*c + 2*anchorCnt*num] << ", " 
-			                      << biases[2*c + 2*anchorCnt*num + 1] << endl;
-		cout << "xmin, ymin = " << static_cast<int>(xmin) << ", " << static_cast<int>(ymin) << endl;
-		cout << "xmax, ymax = " << static_cast<int>(xmax) << ", " << static_cast<int>(ymax) << endl;
-		cout << "------------------------------------------" << endl;
-	        */
+
                 box.push_back((w + sigmoid(swap[h * width + w][c][0])) / width); // 1.0 Normalize coordinates
                 box.push_back((h + sigmoid(swap[h * width + w][c][1])) / height); // 1.0 Normalize coordinetes
 										  //
@@ -142,6 +121,45 @@ void detect(vector<vector<float>> &boxes, const int8_t* result,
     }
 }
 
+void detect(vector<vector<float>> &boxes, const int8_t* result,
+    int channel, int height, int width, int num, int sHeight, int sWidth, const float& scale) {
+    vector<float> biases{116,90, 156,198, 373,326, 30,61, 62,45, 59,119, 10,13, 16,30, 33,23};
+    int conf_box = 5 + classificationCnt;
+    float swap[height * width][anchorCnt][conf_box];
+   
+    for (int h = 0; h < height; ++h) {
+        for (int w = 0; w < width; ++w) {
+            for (int c = 0; c < channel; ++c) {
+                int temp = h * channel * width + w * channel + c;
+                swap[h * width + w][c / conf_box][c % conf_box] = static_cast<float>(result[temp]) * scale;
+            }
+        }
+    }
+    for (int h = 0; h < height; ++h) {
+        for (int w = 0; w < width; ++w) {
+            for (int c = 0; c < anchorCnt; ++c) {
+                float obj_score = sigmoid(swap[h * width + w][c][4]);
+                if (obj_score < CONF)
+                    continue;
+                vector<float> box;
+
+                box.push_back((w + sigmoid(swap[h * width + w][c][0])) / width); // 1.0 Normalize coordinates
+                box.push_back((h + sigmoid(swap[h * width + w][c][1])) / height); // 1.0 Normalize coordinetes
+										  //
+                box.push_back(exp(swap[h * width + w][c][2]) * biases[2 * c + 2 * anchorCnt * num] / float(sWidth));
+		// Normalized by input width (416)
+                box.push_back(exp(swap[h * width + w][c][3]) * biases[2 * c + 2 * anchorCnt * num + 1] / float(sHeight));
+		// Normalized by output width (416)
+                box.push_back(-1);
+                box.push_back(obj_score);
+                for (int p = 0; p < classificationCnt; p++) {
+                    box.push_back(obj_score * sigmoid(swap[h * width + w][c][5 + p]));
+                }
+                boxes.push_back(box);
+            }
+        }
+    }
+}
 vector<vector<float>> applyNMS(vector<vector<float>>& boxes,int classes, const float thres) {
     vector<pair<int, float>> order(boxes.size());
     vector<vector<float>> result;
