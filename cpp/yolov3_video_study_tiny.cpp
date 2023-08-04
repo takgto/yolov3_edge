@@ -167,10 +167,15 @@ void displayFrame(concurrent_queue<imagePair>& in) {
       //cout << "index = " << index << flush;
       if (index % 2) {
           imshow("YOLOv3 Detection@Xilinx DPU", frame);
-          if (waitKey(1) == 'q') {
-              bReading = false; // usually true, set false only when 'q' key is pushed.
+	  auto key = waitKey(1);
+	  if (key == 27) {
+              bReading = false; 
               exit(0);
-          }
+	  }
+          //if (waitKey(1) == 'q') {
+          //    bReading = false; // usually true, set false only when 'q' key is pushed.
+          //    exit(0);
+          //}
       }  
       auto disp_end_time = chrono::system_clock::now();
       //cout << "\ndisplay time= " << 
@@ -471,7 +476,7 @@ int main(const int argc, const char** argv) {
     shapes.outTensorList = outshapes;    // get output size
     getTensorShape(runner.get(), &shapes, inputCnt, outputCnt);
 
-    concurrent_queue<imagePair> fr(30), shw(30);
+    concurrent_queue<imagePair> fr(100), shw(100);
     array<thread, 4> threadsList = {
         thread(readFrame, argv[2], ref(fr)), 
 	thread(displayFrame, ref(shw)),
