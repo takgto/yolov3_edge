@@ -164,10 +164,13 @@ void displayFrame(concurrent_queue<imagePair>& in) {
       putText(frame, a, cv::Point(10, 15), 1, 1, cv::Scalar{0, 0, 240}, 1);
       //cout << "FPS=" << buffer.str() << "\n" << flush;
       //cout << "index = " << index << flush;
-      imshow("YOLOv3 Detection@Xilinx DPU", frame);
-      if (waitKey(1) == 'q') {
-          bReading = false; // usually true, set false only when 'q' key is pushed.
-          exit(0);
+      if (index%2) {
+          imshow("YOLOv3 Detection@Xilinx DPU", frame);
+	  auto key = waitKey(1);
+          if (key == 27) {
+              bReading = false; // usually true, set false only when 'q' key is pushed.
+              exit(0);
+          }
       }
       auto disp_end_time = chrono::system_clock::now();
       //cout << "\ndisplay time= " << 
