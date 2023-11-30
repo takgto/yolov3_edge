@@ -1,0 +1,11 @@
+person 77 7 100 61
+car 55 26 69 33
+person 35 22 40 32
+person 25 16 33 30
+person 8 13 21 55
+person 0 20 5 50
+person 261 12 272 54
+person 233 16 251 57
+person 55 24 65 50
+car 40 21 67 35
+person 103 17 119 46

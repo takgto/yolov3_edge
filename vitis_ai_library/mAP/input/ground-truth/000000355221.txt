@@ -1,0 +1,6 @@
+car 62 57 232 125
+person 368 10 388 44
+person 384 9 413 41
+person 0 59 32 125
+person 409 5 427 30
+person 395 6 410 20

@@ -1,0 +1,15 @@
+person 238 72 331 339
+person 406 44 419 71
+person 192 58 207 85
+person 336 42 341 63
+person 406 25 413 38
+person 442 21 447 34
+person 346 41 353 53
+person 279 34 290 54
+person 49 60 58 81
+person 460 22 466 35
+person 303 31 308 39
+person 535 18 543 39
+car 0 59 38 81
+person 478 24 483 31
+person 98 0 525 76

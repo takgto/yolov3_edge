@@ -1,0 +1,17 @@
+bicycle 428 88 484 188
+bicycle 529 92 603 230
+bicycle 515 134 554 216
+person 12 4 107 262
+person 195 9 250 125
+person 249 27 320 116
+person 96 0 184 277
+person 452 16 490 74
+person 66 20 122 193
+person 505 34 542 168
+person 555 22 628 71
+person 616 0 639 116
+person 560 1 613 130
+person 253 14 284 75
+person 426 46 451 89
+person 411 33 427 55
+person 0 7 581 109
