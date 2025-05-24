@@ -56,8 +56,8 @@ int main() {
     ...
 }
 ```
-次に, 各処理段階の前後に以下のコードを追加します.
-
+次に, 各処理段階の前後に以下のコードを追加します.また, frameIndexは, 処理するフレームのインデックスを表す変数で, 0から始まる整数です. 例えば, main関数の中でindexという変数を使っている場合は, indexをframeIndexとして使います.
+multi threadingをしている場合は, frameIndexをtaskのidのように扱っていると思うので, そのidを使います.
 ```cpp
 // 処理段階の前
 auto start = std::chrono::high_resolution_clock::now();
@@ -75,6 +75,22 @@ logger.logRow("<function_name>", { <frameIndex>, func_start, func_dur });
 void some_function() {
     ScopeTimer timer("function_name");
     // 処理
+}
+```
+
+最後にちょっと大変ですが, maxFrameの値になった時に適切に処理を終了するようにします.
+yolov3_video_study_bench.cppやyolov3_video_subject1_bench.cppを参考にしてください.
+```cpp
+// subject1_bench.cppの例
+int main() {
+    program_start = std::chrono::high_resolution_clock::now();
+    ...
+    int index = 0;
+    while (index < maxFrame) {
+        ...
+        index++;
+    }
+    return 0;
 }
 ```
 
