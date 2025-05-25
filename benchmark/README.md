@@ -47,7 +47,7 @@ cppファイルを編集して, ベンチマークを実行できるようにす
 // bench_tmp.csvは./test_fps.shで使うためなので, その必要がなければ適宜変更してください.
 static CSVLogger logger("bench_tmp.csv", "tid,func,frame,start,latency");
 static std::chrono::high_resolution_clock::time_point program_start;
-int maxFrame = 100; // maximum number of frames to process
+int maxFrame = 100; // maximum number of frames to process, recommended to set to 100 or more
 ```
 次に, main関数の最初に以下のコードを追加します.
 ```cpp

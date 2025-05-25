@@ -21,6 +21,13 @@ def calculate_statistics(csv_dir, output_dir):
     for csv_path in csv_paths:
         print(f'Processing {csv_path}...')
         temp_df = pd.read_csv(csv_path)
+        # Ensure numeric frame
+        temp_df['frame'] = pd.to_numeric(temp_df['frame'], errors='coerce')
+        temp_df = temp_df.dropna(subset=['frame'])
+        temp_df['frame'] = temp_df['frame'].astype(int)
+        # remove first 10 frames since they are usually warmup frames
+        temp_df = temp_df[temp_df['frame'] >= 10]
+        
         # get the last frame number
         first_readFrame_time = temp_df[temp_df['func'] == 'readFrame']['start'].min()
         max_frame = temp_df['frame'].max()

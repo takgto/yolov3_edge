@@ -18,6 +18,8 @@ def plot_boxplot(csv_path):
     df['frame'] = pd.to_numeric(df['frame'], errors='coerce')
     df = df.dropna(subset=['frame'])
     df['frame'] = df['frame'].astype(int)
+    # remove first 10 frames since they are usually warmup frames
+    df = df[df['frame'] >= 10]
 
     stage_order = ["readFrame", "setInputPointer", "pre_process", 
                    "exec_async", "wait", "post_process", "displayFrame"]

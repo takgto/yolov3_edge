@@ -22,8 +22,11 @@ def plot_gantt(csv_path, max_frame=15):
     df['frame'] = pd.to_numeric(df['frame'], errors='coerce')
     df = df.dropna(subset=['frame'])
     df['frame'] = df['frame'].astype(int)
+    # remove first 10 frames since they are usually warmup frames
+    df = df[df['frame'] >= 10]
+
     # Filter frames
-    df = df[df['frame'] < max_frame]
+    df = df[df['frame'] < max_frame + 10]  # Include frames up to max_frame + 10 for better visualization
     df['start'] = df['start'] - df['start'].min()  # Normalize start times
     
     # Define stage order and colors
@@ -60,13 +63,13 @@ def plot_gantt(csv_path, max_frame=15):
                         color=colors[idx % len(colors)], 
                         label=func if (frame == 0 and ax == axs[0]) else "")
         ax.set_ylabel(f'Thread {tid}')
-        ax.set_yticks(range(max_frame))
-        ax.set_yticklabels([f'Frame {i}' for i in range(max_frame)])
-        ax.set_ylim(-0.5, max_frame - 0.5)
+        ax.set_yticks(range(10, max_frame + 10))
+        ax.set_yticklabels([f'Frame {i}' for i in range(10, max_frame+10)])
+        ax.set_ylim(10-0.5, max_frame + 10 - 0.5)
         ax.legend(legend_handles, stage_order, loc='lower right', fontsize='small')
     
     axs[-1].set_xlabel('Time since start (µs)')
-    fig.suptitle(f'Gantt Chart by Thread (first {max_frame} frames)')
+    fig.suptitle(f'Gantt Chart by Thread (first {max_frame} frames, excluding warmup frames)', fontsize=16)
 
     
     plt.tight_layout(rect=[0, 0, 1, 0.96])
@@ -91,12 +94,12 @@ def plot_gantt(csv_path, max_frame=15):
                 label=func if frame == 0 else ""
             )
 
-    ax.set_yticks(range(max_frame))
-    ax.set_yticklabels([f"Frame {i}" for i in range(max_frame)])
+    ax.set_yticks(range(10, max_frame+10))
+    ax.set_yticklabels([f"Frame {i}" for i in range(10, max_frame+10)])
     ax.set_xlabel("Time since start (µs)")
     ax.set_ylabel("Frame")
 
-    ax.set_title(f"Gantt Chart by Frame (first {max_frame} frames)")
+    ax.set_title(f"Gantt Chart by Frame (first {max_frame} frames, excluding warmup frames)")
     ax.legend(legend_handles, stage_order, loc='lower right', fontsize='small')
     plt.tight_layout()
     plt.savefig(f'{output_file_base}_frame.png', dpi=300)
