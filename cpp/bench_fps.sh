@@ -1,8 +1,8 @@
 
 # !/bin/bash
-# usage: ./test_fps.sh <cpp_file_name_only> <xmodel_file>
+# usage: ./benchmark_fps.sh <cpp_file_name_only> <xmodel_file>
 
-# 0. make new directory (<unixtime>_test) where the cpp code and executable will be copied
+# 0. make new directory (<unixtime>_benchmark) where the cpp code and executable will be copied
 # 1. compile the cpp code
 #       copy the cpp code and executable to the directory
 # 2. execute and output the result to a directory where the original cpp code is
@@ -26,13 +26,14 @@ if [ ! -f ${xmodel_file} ]; then
 fi
 
 # 0.
-echo "0. make new directory (../test/<unixtime>_test) where the cpp code and executable will be copied"
-unixtime=$(date +%s)
-mkdir -p "../test/${unixtime}_test"
-touch "../test/${unixtime}_test/meta.txt"
-# write the meta info to the file
-echo "cpp_file: ${cpp_file}" >> "../test/${unixtime}_test/meta.txt"
-echo "xmodel_file: ${xmodel_file}" >> "../test/${unixtime}_test/meta.txt"
+echo "0. make new directory (../benchmark/<cpp_file_noext>_benchmark_<unixtime>) where the cpp code and executable will be copied"
+unixtime=$(date ""+%m%d_%H%M%S"")
+benchmark_dir="../benchmark/${cpp_file_noext}_benchmark_${unixtime}"
+mkdir -p "${benchmark_dir}"
+touch "${benchmark_dir}/meta.txt"
+
+echo "cpp_file: ${cpp_file}" >> "${benchmark_dir}/meta.txt"
+echo "xmodel_file: ${xmodel_file}" >> "${benchmark_dir}/meta.txt"
 
 # 1.
 echo "1. compile the cpp code"
@@ -46,8 +47,8 @@ if [ $skip_compile -eq 0 ]; then
 else
     echo "skipping compilation as per user request."
 fi
-cp ${cpp_dir} "../test/${unixtime}_test/" # copy the executable
-cp ${cpp_file} "../test/${unixtime}_test/" # copy the cpp code
+cp ${cpp_dir} "${benchmark_dir}/" # copy the executable
+cp ${cpp_file} "${benchmark_dir}/" # copy the cpp code
 
 # 2.
 echo "2. execute cpp code with the xmodel file: ${xmodel_file}"
@@ -55,17 +56,17 @@ for video_file in $(ls video/*.webm); do
     echo "video file: ${video_file}"
     vf=$(basename $video_file | cut -d'.' -f1)
     "./${cpp_dir}" $xmodel_file ./$video_file
-    cp bench_tmp.csv ../test/${unixtime}_test/
-    mv ../test/${unixtime}_test/bench_tmp.csv ../test/${unixtime}_test/${vf}_result.csv
-    echo "result saved to ../test/${unixtime}_test/${vf}_result.csv"
+    cp bench_tmp.csv ${benchmark_dir}/
+    mv ${benchmark_dir}/bench_tmp.csv ${benchmark_dir}/${vf}_result.csv
+    echo "result saved to ${benchmark_dir}/${vf}_result.csv"
     rm bench_tmp.csv
 done
 
 # 3.
 echo "3. calculate the fps and execute time stats"
 example_video="traffic1"
-python3 "../test/stats.py" "../test/${unixtime}_test/"
-python3 "../test/gantt_chart.py" "../test/${unixtime}_test/${example_video}_result.csv" --frames 10
-python3 "../test/box_plot.py" "../test/${unixtime}_test/${example_video}_result.csv"
+python3 "../benchmark/stats.py" "${benchmark_dir}/"
+python3 "../benchmark/gantt_chart.py" "${benchmark_dir}/${example_video}_result.csv" --frames 10
+python3 "../benchmark/box_plot.py" "${benchmark_dir}/${example_video}_result.csv"
 
-echo "Done. results in $test_dir"
+echo "Done. results in $benchmark_dir"

@@ -9,18 +9,22 @@ def plot_gantt(csv_path, max_frame=15):
         csv_path (str): Path to the CSV file containing benchmark data.
         max_frame (int): Number of initial frames to plot.
     """
+
     output_dir = csv_path.rsplit('/', 1)[0]  # Get directory from CSV path
     if not output_dir:
         output_dir = '.'
     output_file_base = f'{output_dir}/gantt_charts'
+
     # Load CSV
     df = pd.read_csv(csv_path)
+
     # Ensure numeric frame
     df['frame'] = pd.to_numeric(df['frame'], errors='coerce')
     df = df.dropna(subset=['frame'])
     df['frame'] = df['frame'].astype(int)
     # Filter frames
     df = df[df['frame'] < max_frame]
+    df['start'] = df['start'] - df['start'].min()  # Normalize start times
     
     # Define stage order and colors
     stage_order = ["readFrame", "setInputPointer", "pre_process", 

@@ -45,7 +45,7 @@ bool Lbox_on = false;
 // Global Logger
 static CSVLogger logger("bench_tmp.csv", "tid,func,frame,start,latency");
 static std::chrono::high_resolution_clock::time_point program_start;
-int maxFrame = 20; // maximum number of frames to process, set to 0 for no limit
+int maxFrame = 100; // maximum number of frames to process, set to 0 for no limit
 
 chrono::system_clock::time_point start_time, end_time, pre_end_time, dpu_end_time;
 
@@ -69,7 +69,7 @@ public:
 };
 
 // input frames queue
-queue<pair<int, Mat>> queueInput; // queue of FIFO
+queue<imagePair> queueInput; // queue of FIFO
 // display frames queue
 priority_queue<imagePair, vector<imagePair>, paircomp> queueShow; // priority queue by index comp.
 
@@ -102,6 +102,7 @@ public:
 
     void push(const T &value)
     {
+        // ScopeTimer timer_push("concurrent_queue::push"); // start timer for push function
         std::unique_lock<std::mutex> guard(mtx_);
         // wait 'can set'
         can_push_.wait(guard, [this]()
@@ -127,9 +128,26 @@ public:
     bool empty() { return queue_.empty(); }
 };
 
+imagePair makePair(int idx, const Mat &img)
+{
+    ScopeTimer timer_make_pair("make_pair"); // start timer for make_pair function
+    return imagePair(idx, img);
+}
+
+bool videoRead(VideoCapture video, Mat &img){
+    ScopeTimer timer_videoOpen("videoRead"); // start timer for videoOpen function
+    return video.read(img);
+}
+
+void Push(concurrent_queue<imagePair> &queue, const imagePair &pair)
+{
+    ScopeTimer timer_push("Push"); // start timer for Push function
+    queue.push(move(pair));
+}
+
 void readFrame(const char *fileName, concurrent_queue<imagePair> &out)
 {
-    ScopeTimer timer_all("readFrame_total"); // start timer for readFrame function
+    // ScopeTimer timer_all("readFrame_total"); // start timer for readFrame function
     static int loop = 1;                     // video end of three times play
     VideoCapture video;
     string videoFile = fileName;
@@ -148,17 +166,16 @@ void readFrame(const char *fileName, concurrent_queue<imagePair> &out)
         {
             auto t0 = high_resolution_clock::now();
             Mat img;
-            if (!video.read(img))
+            if (!videoRead(video, img))
             {
                 break;
             }
 
-            auto pair = make_pair(idxInputImage, img);
-            out.push(pair);
+            auto pair = makePair(idxInputImage, img);
+            Push(out, pair);
             auto t1 = high_resolution_clock::now();
             auto read_dur = duration_cast<microseconds>(t1 - t0).count();
             auto read_start = (duration_cast<microseconds>(t1 - program_start)).count();
-
             logger.logRow("readFrame", {idxInputImage, read_start, read_dur});
             ++idxInputImage;
         }
@@ -169,15 +186,26 @@ void readFrame(const char *fileName, concurrent_queue<imagePair> &out)
     bReading = false; // usually true, set false only when 'q' key is pushed.
 }
 
+imagePair Pop(concurrent_queue<imagePair> &queue)
+{
+    ScopeTimer timer_pop("Pop"); // start timer for Pop function
+    return queue.pop();
+}
+
+void writeResult(const Mat &img)
+{
+    ScopeTimer timer_write("writeResult"); // start timer for writeResult function
+    imwrite("result.jpg", img);
+}
 void displayFrame(concurrent_queue<imagePair> &in)
 {
-    ScopeTimer timer_all("displayFrame_total"); // start timer for displayFrame function
+    // ScopeTimer timer_all("displayFrame_total"); // start timer for displayFrame function
     Mat frame;
     int index;
     while (true)
     {
         auto t0 = high_resolution_clock::now();
-        auto pairIndexImg = in.pop();
+        auto pairIndexImg = Pop(in);
         frame = pairIndexImg.second;
         index = pairIndexImg.first;
         if (frame.rows <= 0 || frame.cols <= 0)
@@ -197,6 +225,7 @@ void displayFrame(concurrent_queue<imagePair> &in)
         if (index % 2)
         {
             // imshow("YOLOv3 Detection@Xilinx DPU", frame);
+            writeResult(frame); // save result to file
             // auto key = waitKey(1);
             // if (key == 27)
             // {
