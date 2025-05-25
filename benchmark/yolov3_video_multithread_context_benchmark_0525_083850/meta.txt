@@ -1,0 +1,5 @@
+cpp_file: yolov3_video_multithread_context.cpp
+xmodel_file: dpu_yolov3.xmodel
+../benchmark/yolov3_video_multithread_context_benchmark_0525_083850//traffic2_result.csv: 14.69 FPS
+../benchmark/yolov3_video_multithread_context_benchmark_0525_083850//traffic1_result.csv: 14.71 FPS
+../benchmark/yolov3_video_multithread_context_benchmark_0525_083850//adas_result.csv: 14.68 FPS
