@@ -66,7 +66,7 @@ done
 echo "3. calculate the fps and execute time stats"
 example_video="traffic1"
 python3 "../benchmark/stats.py" "${benchmark_dir}/"
-python3 "../benchmark/gantt_chart.py" "${benchmark_dir}/${example_video}_result.csv" --frames 10
+python3 "../benchmark/gantt_chart.py" "${benchmark_dir}/${example_video}_result.csv" --frames 30
 python3 "../benchmark/box_plot.py" "${benchmark_dir}/${example_video}_result.csv"
 
 echo "Done. results in $benchmark_dir"

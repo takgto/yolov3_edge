@@ -2,6 +2,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import argparse
 
+EX_FRAMES = 40  # Number of frames to exclude for warmup
 def plot_gantt(csv_path, max_frame=15):
     """
     Create Gantt charts from the YOLO benchmark CSV file.
@@ -22,11 +23,11 @@ def plot_gantt(csv_path, max_frame=15):
     df['frame'] = pd.to_numeric(df['frame'], errors='coerce')
     df = df.dropna(subset=['frame'])
     df['frame'] = df['frame'].astype(int)
-    # remove first 10 frames since they are usually warmup frames
-    df = df[df['frame'] >= 10]
+    # remove first EX_FRAMES frames since they are usually warmup frames
+    df = df[df['frame'] >= EX_FRAMES]
 
     # Filter frames
-    df = df[df['frame'] < max_frame + 10]  # Include frames up to max_frame + 10 for better visualization
+    df = df[df['frame'] < max_frame + EX_FRAMES]  # Include frames up to max_frame + EX_FRAMES for better visualization
     df['start'] = df['start'] - df['start'].min()  # Normalize start times
     
     # Define stage order and colors
@@ -63,9 +64,9 @@ def plot_gantt(csv_path, max_frame=15):
                         color=colors[idx % len(colors)], 
                         label=func if (frame == 0 and ax == axs[0]) else "")
         ax.set_ylabel(f'Thread {tid}')
-        ax.set_yticks(range(10, max_frame + 10))
-        ax.set_yticklabels([f'Frame {i}' for i in range(10, max_frame+10)])
-        ax.set_ylim(10-0.5, max_frame + 10 - 0.5)
+        ax.set_yticks(range(EX_FRAMES, max_frame + EX_FRAMES))
+        ax.set_yticklabels([f'Frame {i}' for i in range(EX_FRAMES, max_frame+EX_FRAMES)])
+        ax.set_ylim(EX_FRAMES-0.5, max_frame + EX_FRAMES - 0.5)
         ax.legend(legend_handles, stage_order, loc='lower right', fontsize='small')
     
     axs[-1].set_xlabel('Time since start (µs)')
@@ -94,8 +95,8 @@ def plot_gantt(csv_path, max_frame=15):
                 label=func if frame == 0 else ""
             )
 
-    ax.set_yticks(range(10, max_frame+10))
-    ax.set_yticklabels([f"Frame {i}" for i in range(10, max_frame+10)])
+    ax.set_yticks(range(EX_FRAMES, max_frame+EX_FRAMES))
+    ax.set_yticklabels([f"Frame {i}" for i in range(EX_FRAMES, max_frame+EX_FRAMES)])
     ax.set_xlabel("Time since start (µs)")
     ax.set_ylabel("Frame")
 

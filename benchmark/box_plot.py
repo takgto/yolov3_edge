@@ -2,6 +2,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import argparse
 
+EX_FRAMES = 40  # Number of frames to exclude for warmup
 def plot_boxplot(csv_path):
     """
     Create a boxplot from the YOLO benchmark CSV file.
@@ -19,7 +20,7 @@ def plot_boxplot(csv_path):
     df = df.dropna(subset=['frame'])
     df['frame'] = df['frame'].astype(int)
     # remove first 10 frames since they are usually warmup frames
-    df = df[df['frame'] >= 10]
+    df = df[df['frame'] >= EX_FRAMES]
 
     stage_order = ["readFrame", "setInputPointer", "pre_process", 
                    "exec_async", "wait", "post_process", "displayFrame"]
