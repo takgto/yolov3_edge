@@ -160,6 +160,7 @@ void detect(vector<vector<float>> &boxes, const int8_t* result,
         }
     }
 }
+
 vector<vector<float>> applyNMS(vector<vector<float>>& boxes,int classes, const float thres) {
     vector<pair<int, float>> order(boxes.size());
     vector<vector<float>> result;

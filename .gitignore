@@ -1,2 +1,4 @@
 *.xmodel
 cpp/cpp
+/benchmark/*_test/
+/benchmark/*_benchmark_*/
