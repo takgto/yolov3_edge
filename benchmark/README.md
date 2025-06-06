@@ -4,11 +4,11 @@ cppファイルを適切に編集して, 以下のコマンドを../cppで実行
 詳細な編集方法は下のセクションを参照してください.
 
 ```bash
-./test_fps.sh <cppファイル> <xmodelファイル> <skip_compile>
+./bench_fps.sh <cppファイル> <xmodelファイル> <skip_compile>
 ```
 ## 例
 ```bash
-./test_fps.sh yolov3_video_study_bench.cpp dpu_yolov3.xmodel 1
+./bench_fps.sh yolov3_video_study_bench.cpp dpu_yolov3.xmodel 1
 ```
 skip_compileを1にすると, コンパイルをスキップして実行します. 0にすると, ../cpp/make.shを実行してコンパイルします.
 ../cpp/video以下にある3つの動画に対して, 推論を行なってfpsや各処理の時間を計測します.

@@ -30,14 +30,17 @@ def plot_gantt(csv_path, max_frame=15):
     df = df[df['frame'] < max_frame + EX_FRAMES]  # Include frames up to max_frame + EX_FRAMES for better visualization
     df['start'] = df['start'] - df['start'].min()  # Normalize start times
     
-    # Define stage order and colors
-    stage_order = ["readFrame", "setInputPointer", "pre_process", 
-                   "exec_async", "wait", "post_process", "displayFrame"]
+    funcs = df['func'].unique() # 0_readFrame, 1_preprocess, ...
+    if len(funcs) == 0:
+        print("No functions found in the CSV file.")
+        return
+    # sort functions by prefix number
+    funcs = sorted(funcs, key=lambda x: int(x.split('_')[0]) if x.split('_')[0].isdigit() else float('inf'))
     colors = plt.cm.tab20.colors
     
     legend_handles = [
         plt.Rectangle((0,0),1,1, color=colors[i % len(colors)])
-        for i in range(len(stage_order))
+        for i in range(len(funcs))
     ]
 
     # Gantt chart by thread
@@ -54,7 +57,7 @@ def plot_gantt(csv_path, max_frame=15):
         df_thread = df[df['tid'] == tid]
         for frame in sorted(df_thread['frame'].unique()):
             sub = df_thread[df_thread['frame'] == frame]
-            for idx, func in enumerate(stage_order):
+            for idx, func in enumerate(funcs):
                 row = sub[sub['func'] == func]
                 if row.empty:
                     continue
@@ -67,7 +70,7 @@ def plot_gantt(csv_path, max_frame=15):
         ax.set_yticks(range(EX_FRAMES, max_frame + EX_FRAMES))
         ax.set_yticklabels([f'Frame {i}' for i in range(EX_FRAMES, max_frame+EX_FRAMES)])
         ax.set_ylim(EX_FRAMES-0.5, max_frame + EX_FRAMES - 0.5)
-        ax.legend(legend_handles, stage_order, loc='lower right', fontsize='small')
+        ax.legend(legend_handles, funcs, loc='lower right', fontsize='small')
     
     axs[-1].set_xlabel('Time since start (µs)')
     fig.suptitle(f'Gantt Chart by Thread (first {max_frame} frames, excluding warmup frames)', fontsize=16)
@@ -80,7 +83,7 @@ def plot_gantt(csv_path, max_frame=15):
     fig, ax = plt.subplots(figsize=(12, 6))
     for frame in sorted(df['frame'].unique()):
         sub = df[df['frame'] == frame]
-        for idx, func in enumerate(stage_order):
+        for idx, func in enumerate(funcs):
             row = sub[sub['func'] == func]
             if row.empty:
                 continue
@@ -101,7 +104,7 @@ def plot_gantt(csv_path, max_frame=15):
     ax.set_ylabel("Frame")
 
     ax.set_title(f"Gantt Chart by Frame (first {max_frame} frames, excluding warmup frames)")
-    ax.legend(legend_handles, stage_order, loc='lower right', fontsize='small')
+    ax.legend(legend_handles, funcs, loc='lower right', fontsize='small')
     plt.tight_layout()
     plt.savefig(f'{output_file_base}_frame.png', dpi=300)
 

@@ -361,7 +361,7 @@ void setInputPointer_OpenCV(const Mat &frame, int8_t *data,
 
     // 3) scale を反映しつつ int8 へ量子化, padding
     cv::Mat quantized;
-    image2.convertTo(quantized, CV_8S, input_scale / 128.0, 0);
+    image2.convertTo(quantized, CV_8S, input_scale / 256.0, 0);
 
     // 4) メモリコピー
     std::memcpy(data, quantized.data, width * height * 3);

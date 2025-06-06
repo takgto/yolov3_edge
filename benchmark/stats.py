@@ -29,9 +29,9 @@ def calculate_statistics(csv_dir, output_dir):
         temp_df = temp_df[temp_df['frame'] >= 10]
         
         # get the last frame number
-        first_readFrame_time = temp_df[temp_df['func'] == 'readFrame']['start'].min()
+        first_readFrame_time = temp_df[temp_df['func'] == '0_readFrame']['start'].min()
         max_frame = temp_df['frame'].max()
-        last_display_time = temp_df[temp_df['func'] == 'displayFrame']['start'].max()
+        last_display_time = temp_df[temp_df['func'] == '9_displayFrame']['start'].max()
 
         average_fps = max_frame / (last_display_time - first_readFrame_time) * 1e6  # Convert to FPS
         print(f'Average FPS for {csv_path}: {average_fps:.2f}')

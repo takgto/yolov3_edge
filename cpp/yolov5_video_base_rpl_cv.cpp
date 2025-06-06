@@ -35,6 +35,7 @@
 #include "common.h"
 #include "utils.h"
 #include "benchmark.h"
+#include "resizeContext.h"
 
 using namespace std;
 using namespace cv;
@@ -45,7 +46,7 @@ bool Lbox_on = false;
 // Global Logger
 static CSVLogger logger("bench_tmp.csv", "tid,func,frame,start,latency");
 static std::chrono::high_resolution_clock::time_point program_start;
-int maxFrame = 100; // maximum number of frames to process, set to 0 for no limit
+int maxFrame = 1000; // maximum number of frames to process, set to 0 for no limit
 
 chrono::system_clock::time_point start_time, end_time;
 
@@ -176,8 +177,8 @@ void readOneFrame(VideoCapture &video, concurrent_queue<imagePair> &out, int &id
     out.push(pair);
     auto t1 = chrono::high_resolution_clock::now();
     auto read_dur = duration_cast<microseconds>(t1 - t0).count();
-    auto read_start = (duration_cast<microseconds>(t1 - program_start)).count();
-    logger.logRow("readFrame", {pair.first, read_start, read_dur});
+    auto read_start = (duration_cast<microseconds>(t0 - program_start)).count();
+    logger.logRow("0_readFrame", {pair.first, read_start, read_dur});
 }
 
 void displayFrame(concurrent_queue<imagePair> &in)
@@ -223,7 +224,7 @@ void displayFrame(concurrent_queue<imagePair> &in)
 void displayOneFrame(concurrent_queue<imagePair> &in)
 {
     // ScopeTimer timer_display("displayOnFrame"); // start timer for displayOnFrame function
-    static const int fontFace = FONT_HERSHEY_SIMPLEX;
+    static const int fontFace = 1;
     static const double fontScale = 1.0;
     static const int thickness = 1;
     static const Scalar color{0,0,240};
@@ -248,127 +249,39 @@ void displayOneFrame(concurrent_queue<imagePair> &in)
 
     // imwrite("result.jpg", frame);
     imshow("YOLOv3 Detection@Xilinx DPU", frame);
-    auto key = waitKey(1);
+    waitKey(1);
     auto t1 = chrono::high_resolution_clock::now();
     auto display_dur = duration_cast<microseconds>(t1 - t0).count();
     auto display_start = (duration_cast<microseconds>(t0 - program_start)).count();
-    logger.logRow("displayFrame", {index, display_start, display_dur});
+    logger.logRow("9_displayFrame", {index, display_start, display_dur});
 }
 
-Mat post_process(const Mat &frame, const vector<int8_t *> &out, const GraphInfo &shapes, const float &scale, const int &sHeight, const int &sWidth)
-{
-    // sHeight, sWidth = 416, 416
-    auto img = frame.clone();
-    vector<vector<float>> boxes;
-    char fname[256];
-    const int outSize = out.size();
-    for (size_t i = 0; i < outSize; i++)
-    {
-        int channel = shapes.outTensorList[i].channel;
-        int width = shapes.outTensorList[i].width;
-        int height = shapes.outTensorList[i].height;
-        int sizeOut = shapes.outTensorList[i].size;
-        // cout << "width, height = " << width << ", " << height << endl; // debug
-        // cout << "channel, sizeOut = " << channel << ", " << sizeOut << endl; // debug
-
-        vector<float> result(sizeOut);
-        boxes.reserve(sizeOut);
-
-        /* Store every output node results */
-        // scaling_cast(out[i], scale, result);
-
-        detect(boxes, out[i], channel, height, width, i, sHeight, sWidth, scale);
-
-        /* debug
-        sprintf(fname, "out%d.dat", i);
-        cout << "binary file output : " << fname << endl;
-        cout << "" << endl;
-
-        write_binary(fname, result);
-        */
-    }
-    /* Restore the correct coordinate frame of the original image */
-    if (Lbox_on)
-    {
-        cout << "Lbox_on" << endl;                    // debug
-        cout << img.cols << ", " << img.rows << endl; // debug
-        cout << sWidth << ", " << sHeight << endl;    // debug
-        correct_region_boxes(boxes, boxes.size(), img.cols, img.rows, sWidth, sHeight);
-        for (size_t i = 0; i < boxes.size(); ++i)
-        {
-            cout << boxes[i][0] << ", " << boxes[i][1] << endl; // debug
-            cout << boxes[i][2] << ", " << boxes[i][3] << endl; // debug
-        }
-    }
-    /* Apply the computation for NMS */
-    // cout << "boxes size: " << boxes.size() << endl; // debug
-    vector<vector<float>> res = applyNMS(boxes, classificationCnt, NMS_THRESHOLD);
-
-    // cout << "boxes size after NMS: " << res.size() << endl;
-    // cout << "class conf, class, xmin, ymin, xmax, ymax" << endl;
-    float h = img.rows;
-    float w = img.cols;
-    for (size_t i = 0; i < res.size(); ++i)
-    {
-        float xmin = (res[i][0] - res[i][2] / 2.0) * w + 1.0;
-        float ymin = (res[i][1] - res[i][3] / 2.0) * h + 1.0;
-        float xmax = (res[i][0] + res[i][2] / 2.0) * w + 1.0;
-        float ymax = (res[i][1] + res[i][3] / 2.0) * h + 1.0;
-
-        // cout<<res[i][res[i][4] + 6]<<" "; // (res[i][4]=class#)+6(offset) means class_score due to the results of apply NMS.
-        // cout<<res[i][4] << " "; // most confident class number
-        // cout<<xmin<<" "<<ymin<<" "<<xmax<<" "<<ymax<<endl;
-
-        if (res[i][res[i][4] + 6] > CONF)
-        {
-            int type = res[i][4];
-
-            if (type == 0)
-            {
-                rectangle(img, Point(xmin, ymin), Point(xmax, ymax),
-                          Scalar(0, 0, 255), 1, 1, 0);
-            }
-            else if (type == 1)
-            {
-                rectangle(img, Point(xmin, ymin), Point(xmax, ymax),
-                          Scalar(255, 0, 0), 1, 1, 0);
-            }
-            else
-            {
-                rectangle(img, Point(xmin, ymin), Point(xmax, ymax),
-                          Scalar(0, 255, 255), 1, 1, 0);
-            }
-        }
-    }
-    return img;
-}
-
-void postProcess_OpenCV(const Mat &frame, const vector<int8_t *> &out, const GraphInfo &shapes,
+void postProcess_OpenCV(int &idxInputImage, const Mat &frame, const vector<int8_t *> &out, const GraphInfo &shapes,
                        const float &scale, const int &sHeight, const int &sWidth)
 {
-    // auto t0 = chrono::system_clock::now();
+    auto t0 = chrono::system_clock::now();
     // sHeight, sWidth = 416, 416
     vector<vector<float>> boxes;
-    for (size_t i = 0; i < out.size(); i++)
+    for (size_t i = 0; i < out.size(); ++i)
     {
         int channel = shapes.outTensorList[i].channel;
         int width = shapes.outTensorList[i].width;
         int height = shapes.outTensorList[i].height;
         int sizeOut = shapes.outTensorList[i].size;
+        // cout << "channel, width, height = " << channel << ", " << width << ", " << height << endl; // debug
+        // cout << "sizeOut = " << sizeOut << endl; // debug
         vector<float> result(sizeOut);
         boxes.reserve(sizeOut);
-
-        detect(boxes, out[i], channel, height, width, i, sHeight, sWidth, scale);
-        // detect_yolov4(boxes, out[i], channel, height, width, i, sHeight, sWidth, scale);
+           
+        detect_yolov5(boxes, out[i], channel, height, width, i, sHeight, sWidth, scale);
     }
 
-    // auto t1 = chrono::system_clock::now();
+    auto t1 = chrono::system_clock::now();
 
     /* Apply the computation for NMS */
-    // cout << "boxes size: " << boxes.size() << endl; // debug
     vector<vector<float>> res = applyNMS(boxes, classificationCnt, NMS_THRESHOLD);
 
-    // auto t2 = chrono::system_clock::now();
+    auto t2 = chrono::system_clock::now();
 
     float h = frame.rows;
     float w = frame.cols;
@@ -400,66 +313,100 @@ void postProcess_OpenCV(const Mat &frame, const vector<int8_t *> &out, const Gra
             }
         }
     }
+    auto t3 = chrono::system_clock::now();
+    auto post_detect = duration_cast<microseconds>(t1 - t0).count();
+    auto nms_dur = duration_cast<microseconds>(t2 - t1).count();
+    auto draw_dur = duration_cast<microseconds>(t3 - t2).count();
+    auto post_start = (duration_cast<microseconds>(t0 - program_start)).count();
+    logger.logRow("6_detect", {idxInputImage, post_start, post_detect});
+    logger.logRow("7_nms", {idxInputImage, post_start + post_detect, nms_dur});
+    logger.logRow("8_draw", {idxInputImage, post_start + post_detect + nms_dur, draw_dur});
+
     // return img;
 }
 
-void quantize_neon(const float *src, int8_t *dst, float scale, size_t len)
+void quantize_u8c3_to_i8c3_neon_optimized(const Mat& in, Mat& out)
 {
-    size_t i = 0;
-    float32x4_t vscale = vdupq_n_f32(scale);
+    // CV_Assert(in.type() == CV_8UC3);
+    // CV_Assert(out.type() == CV_8SC3);
+    // CV_Assert(in.size() == out.size());
+    // CV_Assert(in.step == out.step);  // 1行あたりのバイト数は完全に一致している必要あり
 
-    for (; i + 4 <= len; i += 4)
+    const int rows = in.rows;
+    const int cols = in.cols;
+    // 1行あたりの総バイト数：cols × 3 (チャンネル数)
+    const int width_bytes = cols * 3;
+
+    for (int y = 0; y < rows; y++)
     {
-        // 1) load 4 floats
-        float32x4_t fv = vld1q_f32(src + i);
-        // 2) scale
-        float32x4_t fvq = vmulq_f32(fv, vscale);
-        // 3) float→int32 saturate
-        int32x4_t vi32 = vcvtq_s32_f32(fvq);
-        // 4) int32→int16, saturate
-        int16x4_t vi16 = vqmovn_s32(vi32);
-        // 5) int16→int8, saturate (8 lanes but we only need 4)
-        int8x8_t vi8 = vqmovn_s16(vcombine_s16(vi16, vi16));
-        // 6) store lower 4 bytes
-        vst1_s8(dst + i, vget_low_s8(vi8));
-    }
+        // 行の先頭アドレスを取得
+        const uint8_t*  in_ptr  = in.ptr<uint8_t>(y);
+        int8_t*         out_ptr = out.ptr<int8_t>(y);
 
-    for (; i < len; ++i) {
-        int32_t q = (int32_t)roundf(src[i]*scale);
-        dst[i] = static_cast<int8_t>(std::max(-128, std::min(127, q)));
-    }
-}
+        int remaining = width_bytes;
 
-// original setInputPointer function
-void setInputPointer(const Mat &frame, int8_t *data,
-                     const int &scale)
-{
-    int width = shapes.inTensorList[0].width;
-    int height = shapes.inTensorList[0].height;
-    int size = shapes.inTensorList[0].size;
+        // 行先頭のプリフェッチ（次の行読み込みを想定して先読みする場合）
+        // __builtin_prefetch(in_ptr + 64, 0, 1);
 
-    Mat img = frame.clone();
-    cvtColor(img, img, cv::COLOR_BGR2RGB);
-    Mat image2 = cv::Mat(height, width, CV_8SC3); // CV_8SC3 means 3ch singed char data type
-    cv::resize(img, image2, Size(width, height), 0, 0, cv::INTER_LINEAR);
+        // --------------------------------------------------------------------
+        // (A) まず「32バイトずつ (vld1q_u8×2, vshrq_n_u8×2, vst1q×2)」で処理
+        // --------------------------------------------------------------------
+        while (remaining >= 32)
+        {
+            // プリフェッチ：もう少し先のデータを先読みしたい場合
+            // __builtin_prefetch(in_ptr + 128, 0, 1);
 
-    // unsigned char* imdata = img.data;
-    unsigned char *imdata = image2.data;
-    for (int i = 0; i < size; ++i)
-    {
-        float dataf = static_cast<float>(imdata[i]);
-        data[i] = static_cast<int>((dataf * static_cast<float>(scale) / 256.0));
-        if (data[i] < 0)
-            data[i] = 127;
+            // メモリから 16 バイト読み込み
+            uint8x16_t vin1 = vld1q_u8(in_ptr);
+            // さらに次の 16 バイト読み込み
+            uint8x16_t vin2 = vld1q_u8(in_ptr + 16);
+
+            // 1 ビット右シフト (0..255 → 0..127)
+            uint8x16_t vq1 = vshrq_n_u8(vin1, 1);
+            uint8x16_t vq2 = vshrq_n_u8(vin2, 1);
+
+            // それぞれをそのまま int8x16_t としてストア
+            vst1q_s8(out_ptr,         vreinterpretq_s8_u8(vq1));
+            vst1q_s8(out_ptr + 16,    vreinterpretq_s8_u8(vq2));
+
+            // ポインタを 32 バイトだけ進める
+            in_ptr  += 32;
+            out_ptr += 32;
+            remaining -= 32;
+        }
+
+        // --------------------------------------------------------------------
+        // (B) 続いて「残り 16 バイト以上なら 16 バイトずつ」処理
+        // --------------------------------------------------------------------
+        if (remaining >= 16)
+        {
+            uint8x16_t vin = vld1q_u8(in_ptr);
+            uint8x16_t vq  = vshrq_n_u8(vin, 1);
+            vst1q_s8(out_ptr, vreinterpretq_s8_u8(vq));
+
+            in_ptr  += 16;
+            out_ptr += 16;
+            remaining -= 16;
+        }
+
+        // --------------------------------------------------------------------
+        // (C) 最後に「<16 バイト」の余り部分をスカラーループで処理
+        // --------------------------------------------------------------------
+        for (int i = 0; i < remaining; i++)
+        {
+            // 1ビット右シフトして 0..127 に量子化
+            *out_ptr++ = static_cast<int8_t>((*in_ptr++) >> 1);
+        }
     }
 }
 
 // OpenCV version of setInputPointer function
 static int fromTo[] = {0,2 , 1, 1, 2, 0}; // BGR to RGB
 void setInputPointer_OpenCV(const Mat &frame, int8_t *data,
-                                 float input_scale)
+                                 float input_scale, ResizeContext &resizeContext)
 {
     // setInput_start_time = chrono::system_clock::now();
+    auto t0 = chrono::high_resolution_clock::now();
     // 1) リサイズ＋BGR→RGB
     int width = shapes.inTensorList[0].width;
     int height = shapes.inTensorList[0].height;
@@ -467,18 +414,33 @@ void setInputPointer_OpenCV(const Mat &frame, int8_t *data,
 
     static Mat image, image2, rgb, quantized;
     image     .create(frame.size(), frame.type());
-    image2    .create(Size(width,height), CV_8SC3);
+    image2    .create(Size(width,height), CV_8UC3);
     rgb       .create(Size(width, height), CV_8UC3);
     quantized .create(Size(width,height), CV_8SC3);
 
     image = frame.clone();
-    cv::resize(image, image2, Size(width, height), 0, 0, cv::INTER_LINEAR);
-    mixChannels(&image2, 1, &rgb, 1, fromTo, 3); // BGR to RGB conversion
+    // cv::resize(image, image2, Size(width, height), 0, 0, cv::INTER_NEAREST);
+    resizeContext.resize(image, image2);
+    auto t1 = chrono::high_resolution_clock::now();
+    // 2) BGR→RGB
+    mixChannels(&image2, 1, &rgb, 1, fromTo, 3);
+    auto t2 = chrono::high_resolution_clock::now();
 
     // 3) scale を反映しつつ int8 へ量子化, padding
-    rgb.convertTo(quantized, CV_8S, input_scale / 256.0, 0); // 128 ? 256 ?
+    // rgb.convertTo(quantized, CV_8S, input_scale / 128.0, 0); // 128 ? 256 ?
+    quantize_u8c3_to_i8c3_neon_optimized(rgb, quantized);
     // 4) メモリコピー
     std::memcpy(data, quantized.data, width * height * 3);
+    auto t3 = chrono::high_resolution_clock::now();
+
+    // metrics
+    auto resize_dur = duration_cast<microseconds>(t1 - t0).count();
+    auto bgr2rgb_dur = duration_cast<microseconds>(t2 - t1).count();
+    auto quantize_dur = duration_cast<microseconds>(t3 - t2).count();
+    auto setInput_start = (duration_cast<microseconds>(t0 - program_start)).count();
+    logger.logRow("1_resize", {idxInputImage, setInput_start, resize_dur});
+    logger.logRow("2_bgr2rgb", {idxInputImage, setInput_start + resize_dur, bgr2rgb_dur});
+    logger.logRow("3_quantize", {idxInputImage, setInput_start + resize_dur + bgr2rgb_dur, quantize_dur});
 }
 
 class YoloContext
@@ -522,6 +484,11 @@ public:
         inputsPtr.emplace_back(inputs[0].get());
         outputsPtr.reserve(3);
         outputsPtr = {outputs[0].get(), outputs[1].get(), outputs[2].get()};
+
+        // 7) ResizeContext の初期化
+        // ResizeContext は入力画像のサイズに依存するので、最初の入力画像サイズを渡す
+        resizeContext.init(inShape.width, inShape.height);
+
     }
 
     ~YoloContext()
@@ -536,8 +503,9 @@ public:
     {                                                       
         auto t0 = chrono::high_resolution_clock::now();
         Mat frame = ip.second;
+
         int index = ip.first;
-        setInputPointer_OpenCV(frame, imageInputs, inputScale);
+        setInputPointer_OpenCV(frame, imageInputs, inputScale, resizeContext);
         auto t1 = chrono::high_resolution_clock::now();
         auto job_id = runner->execute_async(inputsPtr, outputsPtr);
         auto t2 = chrono::high_resolution_clock::now();
@@ -546,22 +514,23 @@ public:
 
         // ポスト処理へ
         std::vector<int8_t *> results = {result0, result1, result2};
-        postProcess_OpenCV(frame, results, shapes, conf_output_scale,
+        // debug
+        // cout << "result0 size: " << result0 << endl;
+        postProcess_OpenCV(index, frame, results, shapes, conf_output_scale,
                                             shapes.inTensorList[0].height, shapes.inTensorList[0].width);
         auto t4 = chrono::high_resolution_clock::now();
-        auto setInput_dur = duration_cast<microseconds>(t1 - t0).count();
+        // auto setInput_dur = duration_cast<microseconds>(t1 - t0).count();
         auto execute_dur = duration_cast<microseconds>(t2 - t1).count();
         auto wait_dur = duration_cast<microseconds>(t3 - t2).count();
-        auto postProcess_dur = duration_cast<microseconds>(t4 - t3).count();
-        auto setInput_start = (duration_cast<microseconds>(t0 - program_start)).count();
+        // auto postProcess_dur = duration_cast<microseconds>(t4 - t3).count();
+        // auto setInput_start = (duration_cast<microseconds>(t0 - program_start)).count();
         auto execute_start = (duration_cast<microseconds>(t1 - program_start)).count();
         auto wait_start = (duration_cast<microseconds>(t2 - program_start)).count();
-        auto postProcess_start = (duration_cast<microseconds>(t3 - program_start)).count();
-        logger.logRow("setInputPointer", {index, setInput_start, setInput_dur});
-        logger.logRow("pre_process", {index,  execute_start, 0});
-        logger.logRow("exec_async", {index, execute_start, execute_dur});
-        logger.logRow("wait", {index, wait_start, wait_dur});
-        logger.logRow("post_process", {index, postProcess_start, postProcess_dur});
+        // auto postProcess_start = (duration_cast<microseconds>(t3 - program_start)).count();
+        // logger.logRow("setInputPointer", {index, setInput_start, setInput_dur});
+        logger.logRow("4_exec_async", {index, execute_start, execute_dur});
+        logger.logRow("5_wait", {index, wait_start, wait_dur});
+        // logger.logRow("post_process", {index, postProcess_start, postProcess_dur});
         return frame;
     }
 
@@ -578,6 +547,8 @@ private:
     size_t inSize, size0, size1, size2;
     float inputScale;
     float conf_output_scale;
+
+    ResizeContext resizeContext;
 };
 
 void runYOLO(vart::Runner *runner, concurrent_queue<imagePair> &in, concurrent_queue<imagePair> &out)
@@ -587,6 +558,8 @@ void runYOLO(vart::Runner *runner, concurrent_queue<imagePair> &in, concurrent_q
     pairIndexImage.second = yoloContext.infer(pairIndexImage);
     out.push(pairIndexImage);
 }
+
+
 
 int main(const int argc, const char **argv)
 {
@@ -613,8 +586,8 @@ int main(const int argc, const char **argv)
     auto attrs = xir::Attrs::create();
     auto runner =
         vart::Runner::create_runner(subgraph[0], "run");
-    auto runner1 =
-        vart::Runner::create_runner(subgraph[0], "run");
+    // auto runner1 =
+    //     vart::Runner::create_runner(subgraph[0], "run");
     // auto runner2 =
     //     vart::Runner::create_runner(subgraph[0], "run");
     // auto runner3 =
@@ -630,11 +603,13 @@ int main(const int argc, const char **argv)
     shapes.inTensorList = inshapes;
     shapes.outTensorList = outshapes; // get output size
     getTensorShape(runner.get(), &shapes, inputCnt, outputCnt);
+    // cout << "Input Cnt: " << inputCnt << ", Output Cnt: " << outputCnt << endl;
 
     concurrent_queue<imagePair> fr(30), shw(30);
 
     idxInputImage = 0; // reset frame index of input video
     VideoCapture video = VideoCapture(argv[2]);
+    
     start_time = chrono::system_clock::now();
     while(idxInputImage < maxFrame) {
         readOneFrame(video, fr, idxInputImage);

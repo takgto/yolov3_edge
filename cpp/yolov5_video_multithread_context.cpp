@@ -45,13 +45,14 @@ bool Lbox_on = false;
 // Global Logger
 static CSVLogger logger("bench_tmp.csv", "tid,func,frame,start,latency");
 static std::chrono::high_resolution_clock::time_point program_start;
-int maxFrame = 100; // maximum number of frames to process, set to 0 for no limit
+int maxFrame = 1000; // maximum number of frames to process, set to 0 for no limit
 
 chrono::system_clock::time_point start_time, end_time;
 
 int idxInputImage = 0; // frame index of input video
 int idxShowImage = 0;  // next frame index to be displayed
 bool bReading = true;  // flag of reding input frame
+bool bInfer = true; // flag to infer input frame
 
 typedef pair<int, Mat> imagePair;
 class paircomp
@@ -144,21 +145,29 @@ void readFrame(const char *fileName, concurrent_queue<imagePair> &out)
             exit(-1);
         }
 
-        while (true)
+        while (idxInputImage < maxFrame)
         {
+            auto t0 = chrono::high_resolution_clock::now();
             Mat img;
             if (!video.read(img))
             {
                 break;
             }
             auto pair = make_pair(idxInputImage, img);
-            end_time = chrono::system_clock::now();
+            // end_time = chrono::system_clock::now();
 
+            auto t1 = chrono::high_resolution_clock::now();
+            auto read_dur = duration_cast<microseconds>(t1 - t0).count();
+            auto read_start = (duration_cast<microseconds>(t1 - program_start)).count();
+            logger.logRow("readFrame", {pair.first, read_start, read_dur});
+            // avoid queue waiting
             out.push(pair);
+            ++idxInputImage;
         }
         video.release();
     }
-    exit(0);
+    out.push(make_pair(-1, Mat())); // push a sentinel value to indicate end of stream
+    bReading = false; // set to false when reading is done
 }
 
 void readOneFrame(VideoCapture &video, concurrent_queue<imagePair> &out, int &idxInputImage)
@@ -190,20 +199,21 @@ void displayFrame(concurrent_queue<imagePair> &in)
     static const Scalar color{0,0,240};
     char buf[32];
 
-    while (true)
+    while (bInfer || !in.empty())
     {
         auto pairIndexImg = in.pop();
+        auto t0 = chrono::high_resolution_clock::now();
         frame = pairIndexImg.second;
         index = pairIndexImg.first;
-        if (frame.rows <= 0 || frame.cols <= 0)
+        if (index == -1 || frame.rows <= 0 || frame.cols <= 0)
         {
-            continue;
+            break;
         }
 
         auto show_time = chrono::system_clock::now();
         auto dura = (duration_cast<microseconds>(show_time - start_time)).count();
         double fps = index / (dura * 1e-6);
-        int len = std::snprintf(buf, sizeof(buf), "%.1f FPS", fps);
+        std::snprintf(buf, sizeof(buf), "%.1f FPS", fps);
         cv::putText(frame, buf, Point(10,15),
                     fontFace, fontScale, color, thickness);
         if (index % 2)
@@ -217,7 +227,12 @@ void displayFrame(concurrent_queue<imagePair> &in)
             //     exit(0);
             // }
         }
+        auto t1 = chrono::high_resolution_clock::now();
+        auto display_dur = duration_cast<microseconds>(t1 - t0).count();
+        auto display_start = (duration_cast<microseconds>(t0 - program_start)).count();
+        logger.logRow("displayFrame", {index, display_start, display_dur});
     }
+    cv::destroyAllWindows();
 }
 
 void displayOneFrame(concurrent_queue<imagePair> &in)
@@ -248,7 +263,7 @@ void displayOneFrame(concurrent_queue<imagePair> &in)
 
     // imwrite("result.jpg", frame);
     imshow("YOLOv3 Detection@Xilinx DPU", frame);
-    auto key = waitKey(1);
+    waitKey(1);
     auto t1 = chrono::high_resolution_clock::now();
     auto display_dur = duration_cast<microseconds>(t1 - t0).count();
     auto display_start = (duration_cast<microseconds>(t0 - program_start)).count();
@@ -290,15 +305,15 @@ Mat post_process(const Mat &frame, const vector<int8_t *> &out, const GraphInfo 
     /* Restore the correct coordinate frame of the original image */
     if (Lbox_on)
     {
-        cout << "Lbox_on" << endl;                    // debug
-        cout << img.cols << ", " << img.rows << endl; // debug
-        cout << sWidth << ", " << sHeight << endl;    // debug
+        // cout << "Lbox_on" << endl;                    // debug
+        // cout << img.cols << ", " << img.rows << endl; // debug
+        // cout << sWidth << ", " << sHeight << endl;    // debug
         correct_region_boxes(boxes, boxes.size(), img.cols, img.rows, sWidth, sHeight);
-        for (size_t i = 0; i < boxes.size(); ++i)
-        {
-            cout << boxes[i][0] << ", " << boxes[i][1] << endl; // debug
-            cout << boxes[i][2] << ", " << boxes[i][3] << endl; // debug
-        }
+        // for (size_t i = 0; i < boxes.size(); ++i)
+        // {
+        //     cout << boxes[i][0] << ", " << boxes[i][1] << endl; // debug
+        //     cout << boxes[i][2] << ", " << boxes[i][3] << endl; // debug
+        // }
     }
     /* Apply the computation for NMS */
     // cout << "boxes size: " << boxes.size() << endl; // debug
@@ -355,17 +370,19 @@ void postProcess_OpenCV(const Mat &frame, const vector<int8_t *> &out, const Gra
         int width = shapes.outTensorList[i].width;
         int height = shapes.outTensorList[i].height;
         int sizeOut = shapes.outTensorList[i].size;
+        // cout << "channel, width, height = " << channel << ", " << width << ", " << height << endl; // debug
+        // cout << "sizeOut = " << sizeOut << endl; // debug
         vector<float> result(sizeOut);
         boxes.reserve(sizeOut);
-
-        detect(boxes, out[i], channel, height, width, i, sHeight, sWidth, scale);
+           
+        detect_yolov5(boxes, out[i], channel, height, width, i, sHeight, sWidth, scale);
+        // detect(boxes, out[i], channel, height, width, i, sHeight, sWidth, scale);
         // detect_yolov4(boxes, out[i], channel, height, width, i, sHeight, sWidth, scale);
     }
 
     // auto t1 = chrono::system_clock::now();
 
     /* Apply the computation for NMS */
-    // cout << "boxes size: " << boxes.size() << endl; // debug
     vector<vector<float>> res = applyNMS(boxes, classificationCnt, NMS_THRESHOLD);
 
     // auto t2 = chrono::system_clock::now();
@@ -403,32 +420,32 @@ void postProcess_OpenCV(const Mat &frame, const vector<int8_t *> &out, const Gra
     // return img;
 }
 
-void quantize_neon(const float *src, int8_t *dst, float scale, size_t len)
-{
-    size_t i = 0;
-    float32x4_t vscale = vdupq_n_f32(scale);
+// void quantize_neon(const float *src, int8_t *dst, float scale, size_t len)
+// {
+//     size_t i = 0;
+//     float32x4_t vscale = vdupq_n_f32(scale);
 
-    for (; i + 4 <= len; i += 4)
-    {
-        // 1) load 4 floats
-        float32x4_t fv = vld1q_f32(src + i);
-        // 2) scale
-        float32x4_t fvq = vmulq_f32(fv, vscale);
-        // 3) float→int32 saturate
-        int32x4_t vi32 = vcvtq_s32_f32(fvq);
-        // 4) int32→int16, saturate
-        int16x4_t vi16 = vqmovn_s32(vi32);
-        // 5) int16→int8, saturate (8 lanes but we only need 4)
-        int8x8_t vi8 = vqmovn_s16(vcombine_s16(vi16, vi16));
-        // 6) store lower 4 bytes
-        vst1_s8(dst + i, vget_low_s8(vi8));
-    }
+//     for (; i + 4 <= len; i += 4)
+//     {
+//         // 1) load 4 floats
+//         float32x4_t fv = vld1q_f32(src + i);
+//         // 2) scale
+//         float32x4_t fvq = vmulq_f32(fv, vscale);
+//         // 3) float→int32 saturate
+//         int32x4_t vi32 = vcvtq_s32_f32(fvq);
+//         // 4) int32→int16, saturate
+//         int16x4_t vi16 = vqmovn_s32(vi32);
+//         // 5) int16→int8, saturate (8 lanes but we only need 4)
+//         int8x8_t vi8 = vqmovn_s16(vcombine_s16(vi16, vi16));
+//         // 6) store lower 4 bytes
+//         vst1_s8(dst + i, vget_low_s8(vi8));
+//     }
 
-    for (; i < len; ++i) {
-        int32_t q = (int32_t)roundf(src[i]*scale);
-        dst[i] = static_cast<int8_t>(std::max(-128, std::min(127, q)));
-    }
-}
+//     for (; i < len; ++i) {
+//         int32_t q = (int32_t)roundf(src[i]*scale);
+//         dst[i] = static_cast<int8_t>(std::max(-128, std::min(127, q)));
+//     }
+// }
 
 // original setInputPointer function
 void setInputPointer(const Mat &frame, int8_t *data,
@@ -467,7 +484,7 @@ void setInputPointer_OpenCV(const Mat &frame, int8_t *data,
 
     static Mat image, image2, rgb, quantized;
     image     .create(frame.size(), frame.type());
-    image2    .create(Size(width,height), CV_8SC3);
+    image2    .create(Size(width,height), CV_8UC3);
     rgb       .create(Size(width, height), CV_8UC3);
     quantized .create(Size(width,height), CV_8SC3);
 
@@ -476,7 +493,7 @@ void setInputPointer_OpenCV(const Mat &frame, int8_t *data,
     mixChannels(&image2, 1, &rgb, 1, fromTo, 3); // BGR to RGB conversion
 
     // 3) scale を反映しつつ int8 へ量子化, padding
-    rgb.convertTo(quantized, CV_8S, input_scale / 256.0, 0); // 128 ? 256 ?
+    rgb.convertTo(quantized, CV_8S, input_scale / 128.0, 0); // 128 ? 256 ?
     // 4) メモリコピー
     std::memcpy(data, quantized.data, width * height * 3);
 }
@@ -583,9 +600,18 @@ private:
 void runYOLO(vart::Runner *runner, concurrent_queue<imagePair> &in, concurrent_queue<imagePair> &out)
 {
     static YoloContext yoloContext(runner, shapes);
-    imagePair pairIndexImage = in.pop();
-    pairIndexImage.second = yoloContext.infer(pairIndexImage);
-    out.push(pairIndexImage);
+    while(bReading || !in.empty()){
+        imagePair pairIndexImage = in.pop();
+        if (pairIndexImage.first == -1)
+        {
+            // cout << "End of video stream." << endl; // debug
+            break;
+        }
+        pairIndexImage.second = yoloContext.infer(pairIndexImage);
+        out.push(pairIndexImage);
+    }
+    out.push(make_pair(-1, Mat())); // push a dummy frame to signal end of processing
+    bInfer = false; // set to false when reading is done
 }
 
 int main(const int argc, const char **argv)
@@ -593,7 +619,7 @@ int main(const int argc, const char **argv)
     program_start = chrono::high_resolution_clock::now();
     cout << "concurrency = " << std::thread::hardware_concurrency() << std::endl;
     // set OpenCV thread = 1
-    cv::setNumThreads(1); // OpenCV uses multiple threads by default, set to 1 for single thread
+    cv::setNumThreads(2); // OpenCV uses multiple threads by default, set to 1 for single thread
     // Check args
     if (argc != 3)
     {
@@ -630,17 +656,24 @@ int main(const int argc, const char **argv)
     shapes.inTensorList = inshapes;
     shapes.outTensorList = outshapes; // get output size
     getTensorShape(runner.get(), &shapes, inputCnt, outputCnt);
+    // cout << "Input Cnt: " << inputCnt << ", Output Cnt: " << outputCnt << endl;
 
-    concurrent_queue<imagePair> fr(30), shw(30);
+    concurrent_queue<imagePair> fr(50), shw(50);
 
-    idxInputImage = 0; // reset frame index of input video
-    VideoCapture video = VideoCapture(argv[2]);
-    start_time = chrono::system_clock::now();
-    while(idxInputImage < maxFrame) {
-        readOneFrame(video, fr, idxInputImage);
-        runYOLO(runner.get(), fr, shw);
-        displayOneFrame(shw);
-        ++idxInputImage;
+    array<thread, 3> threadsList = {
+        thread(readFrame, argv[2], ref(fr)),
+        thread(displayFrame, ref(shw)),
+        thread(runYOLO, runner.get(), ref(fr), ref(shw)),
+        // thread(runYOLO, runner1.get(), ref(fr), ref(shw)),
+    };
+    // imshow("YOLOv3 Detection@Xilinx DPU", Mat::zeros(416, 416, CV_8UC3));
+    // waitKey(1); // wait for 1 ms to show the initial frame
+
+    for (auto &t : threadsList)
+    {
+        if (t.joinable())
+            t.join();
     }
+
     return 0;
 }

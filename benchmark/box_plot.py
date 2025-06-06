@@ -22,13 +22,15 @@ def plot_boxplot(csv_path):
     # remove first 10 frames since they are usually warmup frames
     df = df[df['frame'] >= EX_FRAMES]
 
-    stage_order = ["readFrame", "setInputPointer", "pre_process", 
-                   "exec_async", "wait", "post_process", "displayFrame"]
+    funcs = df['func'].unique() # 0_readFrame, 1_preprocess, ...
+    if len(funcs) == 0:
+        print("No functions found in the CSV file.")
+        return
+    # sort functions by prefix number
+    funcs = sorted(funcs, key=lambda x: int(x.split('_')[0]) if x.split('_')[0].isdigit() else float('inf'))
     colors = plt.cm.tab20.colors
 
     # aggregate by function and frame
-    funcs = df['func'].unique()
-    funcs = [func for func in stage_order if func in funcs]  # Keep only those in stage_order
     data = {func: [] for func in funcs}
     for func in funcs:
         func_data = df[df['func'] == func]
@@ -56,6 +58,7 @@ def plot_boxplot(csv_path):
     plt.title('Boxplot of Latencies by Function')
     plt.xlabel('Function')
     plt.ylabel('Latency (µs)')
+    plt.ylim(0, 20000)
     plt.xticks(rotation=45)
     plt.tight_layout()
     plt.savefig( f'{output_dir}/box_plot.png', dpi=300)

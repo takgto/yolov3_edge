@@ -35,7 +35,7 @@ image load_image_cv(const cv::Mat& img);
 image letterbox_image(image im, int w, int h);
 void free_image(image m);
 
-inline float sigmoid(float p) {
+static inline float sigmoid(float p) {
     return 1.0 / (1 + exp(-p * 1.0));
 }
 
@@ -160,6 +160,100 @@ void detect(vector<vector<float>> &boxes, const int8_t* result,
         }
     }
 }
+
+void detect_yolov5(
+    vector<vector<float>> &boxes,
+    const int8_t* result, // result is int8_t* type, as it is the output of DPU
+    int channel, int height, int width, 
+    int num, int sHeight, int sWidth, const float& scale
+) {
+    static const float strides[3] = {8.0f, 16.0f, 32.0f}; // yolov5
+    float stride = strides[num];
+
+    static const float biases[anchorCnt * 2 * 3] = {
+        10, 13, 16, 30, 33, 23,   // stride=8
+        30, 61, 62, 45, 59,119,   // stride=16
+        116,90,156,198,373,326    // stride=32
+    };
+
+    int conf_box = 5 + classificationCnt;
+
+    float swap[height * width][anchorCnt][conf_box];
+
+    for (int h = 0; h < height; ++h) {
+        for (int w = 0; w < width; ++w) {
+            // このセル (h,w) の先頭オフセット = (h*width + w) * channel
+            const int base_index = (h * width + w) * channel;
+
+            // 各アンカーごと
+            for (int c = 0; c < anchorCnt; ++c) {
+                // anchor ごとのチャネルオフセット
+                const int off = c * conf_box;  // 0, conf_box, 2*conf_box
+
+                // 1) objectness を計算
+                //    result[base_index + off + 4] は int8_t 出力なので float に戻し→sigmoid
+                float obj_score = sigmoid(static_cast<float>(result[base_index + off + 4]) * scale);
+                if (obj_score < CONF) {
+                    // ある程度スコアが低ければこの anchor をスキップ
+                    continue;
+                }
+
+                // ② box 中心座標のオフセット tx, ty の sigmoid
+                float tx = sigmoid(static_cast<float>(result[base_index + off + 0]) * scale);
+                float ty = sigmoid(static_cast<float>(result[base_index + off + 1]) * scale);
+
+                // (w, h) は “グリッド座標” なので、float にする
+                const float float_w = static_cast<float>(w);
+                const float float_h = static_cast<float>(h);
+
+                // YOLOv5 の box center 式: (2*sigmoid + grid - 0.5)*stride
+                float cx = (2.0f * tx + float_w - 0.5f) * stride;
+                float cy = (2.0f * ty + float_h - 0.5f) * stride;
+
+                // ③ width/height の計算
+                float tw = sigmoid(static_cast<float>(result[base_index + off + 2]) * scale);
+                float th = sigmoid(static_cast<float>(result[base_index + off + 3]) * scale);
+
+                // バイアス (アンカー固有の幅・高さ) の読み出し
+                //   biases のインデックス = num * (anchorCnt*2) + c*2
+                const float aw = biases[num * (anchorCnt * 2) + c * 2 + 0];
+                const float ah = biases[num * (anchorCnt * 2) + c * 2 + 1];
+
+                // YOLOv5 の box w/h： (2*sigmoid)^2 * anchor
+                //  → (2*tw)^2 * aw, (2*th)^2 * ah
+                float bw = (2.0f * tw) * (2.0f * tw) * aw;
+                float bh = (2.0f * th) * (2.0f * th) * ah;
+
+                // ここまでで obj_score, cx, cy, bw, bh の float が揃ったので、1つの box vector を作成
+                // 必要要素数 = 5（cx, cy, bw, bh, -1） + 1（objectness） + classificationCnt
+                vector<float> box;
+                box.reserve(5 + 1 + classificationCnt);
+
+                // 1. center x, center y を normalized で
+                box.push_back(cx / static_cast<float>(sWidth));
+                box.push_back(cy / static_cast<float>(sHeight));
+                // 2. w, h も normalized
+                box.push_back(bw / static_cast<float>(sWidth));
+                box.push_back(bh / static_cast<float>(sHeight));
+                // 3. placeholder (for NMS)
+                box.push_back(-1.0f);
+                // 4. objectness
+                box.push_back(obj_score);
+
+                // 5. クラスごとのスコア = objectness * sigmoid(class_logit)
+                for (int p = 0; p < classificationCnt; ++p) {
+                    float cls_logit = static_cast<float>(result[base_index + off + 5 + p]) * scale;
+                    float cls_prob  = sigmoid(cls_logit);
+                    box.push_back(obj_score * cls_prob);
+                }
+
+                // 最後にまとめて boxes に追加
+                boxes.push_back(std::move(box));
+            } // for(c : anchorCnt)
+        } // for(w : width)
+    } // for(h : height)
+}
+
 
 vector<vector<float>> applyNMS(vector<vector<float>>& boxes,int classes, const float thres) {
     vector<pair<int, float>> order(boxes.size());

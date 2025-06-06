@@ -13,6 +13,7 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <opencv2/opencv.hpp>
+#include <arm_neon.h>
 
 // new include file related to thread handlig
 #include <future>
@@ -52,7 +53,7 @@ chrono::system_clock::time_point start_time, end_time;
 int idxInputImage = 0; // frame index of input video
 int idxShowImage = 0;  // next frame index to be displayed
 bool bReading = true;  // flag of reding input frame
-bool bInfer = true; // flag to infer input frame
+bool bInfer = true;    // flag to infer input frame
 
 typedef pair<int, Mat> imagePair;
 class paircomp
@@ -138,7 +139,7 @@ void readFrame(const char *fileName, concurrent_queue<imagePair> &out)
 
     while (loop > 0)
     {
-        loop--; //infinite loop
+        loop--; // infinite loop
         if (!video.open(videoFile))
         {
             cout << "Fail to open specified video file:" << videoFile << endl;
@@ -176,7 +177,7 @@ void displayFrame(concurrent_queue<imagePair> &in)
     static const int fontFace = FONT_HERSHEY_SIMPLEX;
     static const double fontScale = 1.0;
     static const int thickness = 1;
-    static const Scalar color{0,0,240};
+    static const Scalar color{0, 0, 240};
     char buf[32];
 
     while (bInfer || !in.empty())
@@ -194,7 +195,7 @@ void displayFrame(concurrent_queue<imagePair> &in)
         auto dura = (duration_cast<microseconds>(show_time - start_time)).count();
         double fps = index / (dura * 1e-6);
         std::snprintf(buf, sizeof(buf), "%.1f FPS", fps);
-        cv::putText(frame, buf, Point(10,15),
+        cv::putText(frame, buf, Point(10, 15),
                     fontFace, fontScale, color, thickness);
         if (index % 2)
         {
@@ -215,7 +216,7 @@ void displayFrame(concurrent_queue<imagePair> &in)
 }
 
 void postProcess_OpenCV(const Mat &frame, const vector<int8_t *> &out, const GraphInfo &shapes,
-                       const float &scale, const int &sHeight, const int &sWidth)
+                        const float &scale, const int &sHeight, const int &sWidth)
 {
     // auto t0 = chrono::system_clock::now();
     // sHeight, sWidth = 416, 416
@@ -275,47 +276,50 @@ void postProcess_OpenCV(const Mat &frame, const vector<int8_t *> &out, const Gra
     // return img;
 }
 
-// original setInputPointer function
-void setInputPointer(const Mat &frame, int8_t *data,
-                     const int &scale)
+void quantize_neon(const float *src, int8_t *dst, float scale, size_t len)
 {
-    int width = shapes.inTensorList[0].width;
-    int height = shapes.inTensorList[0].height;
-    int size = shapes.inTensorList[0].size;
+    size_t i = 0;
+    float32x4_t vscale = vdupq_n_f32(scale);
 
-    Mat img = frame.clone();
-    cvtColor(img, img, cv::COLOR_BGR2RGB);
-    Mat image2 = cv::Mat(height, width, CV_8SC3); // CV_8SC3 means 3ch singed char data type
-    cv::resize(img, image2, Size(width, height), 0, 0, cv::INTER_LINEAR);
-
-    // unsigned char* imdata = img.data;
-    unsigned char *imdata = image2.data;
-    for (int i = 0; i < size; ++i)
+    for (; i + 4 <= len; i += 4)
     {
-        float dataf = static_cast<float>(imdata[i]);
-        data[i] = static_cast<int>((dataf * static_cast<float>(scale) / 256.0));
-        if (data[i] < 0)
-            data[i] = 127;
+        // 1) load 4 floats
+        float32x4_t fv = vld1q_f32(src + i);
+        // 2) scale
+        float32x4_t fvq = vmulq_f32(fv, vscale);
+        // 3) float→int32 saturate
+        int32x4_t vi32 = vcvtq_s32_f32(fvq);
+        // 4) int32→int16, saturate
+        int16x4_t vi16 = vqmovn_s32(vi32);
+        // 5) int16→int8, saturate (8 lanes but we only need 4)
+        int8x8_t vi8 = vqmovn_s16(vcombine_s16(vi16, vi16));
+        // 6) store lower 4 bytes
+        vst1_s8(dst + i, vget_low_s8(vi8));
+    }
+
+    for (; i < len; ++i) {
+        int32_t q = (int32_t)roundf(src[i]*scale);
+        dst[i] = static_cast<int8_t>(std::max(-128, std::min(127, q)));
     }
 }
 
 // OpenCV version of setInputPointer function
-static int fromTo[] = {0,2 , 1, 1, 2, 0}; // BGR to RGB
+static int fromTo[] = {0, 2, 1, 1, 2, 0}; // BGR to RGB
 void setInputPointer_OpenCV(const Mat &frame, int8_t *data,
-                                 float input_scale)
+                            float input_scale)
 {
     // setInput_start_time = chrono::system_clock::now();
     // 1) リサイズ＋BGR→RGB
-    int width = shapes.inTensorList[0].width;
-    int height = shapes.inTensorList[0].height;
-    int size = shapes.inTensorList[0].size;
+    static int width = shapes.inTensorList[0].width;
+    static int height = shapes.inTensorList[0].height;
+    static int size = shapes.inTensorList[0].size;
 
     // static Mat image, image2, rgb, quantized;
-    Mat image, image2, rgb, quantized;
-    image     .create(frame.size(), frame.type());
-    image2    .create(Size(width,height), CV_8SC3);
-    rgb       .create(Size(width, height), CV_8UC3);
-    quantized .create(Size(width,height), CV_8SC3);
+    static Mat image, image2, rgb, quantized;
+    image.create(frame.size(), frame.type());
+    image2.create(Size(width, height), CV_8UC3);
+    rgb.create(Size(width, height), CV_8UC3);
+    quantized.create(Size(width, height), CV_8SC3);
 
     auto t1 = chrono::high_resolution_clock::now();
     image = frame.clone();
@@ -325,11 +329,12 @@ void setInputPointer_OpenCV(const Mat &frame, int8_t *data,
     auto t3 = chrono::high_resolution_clock::now();
 
     // 3) scale を反映しつつ int8 へ量子化, padding
-    rgb.convertTo(quantized, CV_8S, input_scale / 256.0, 0);
+    // rgb.convertTo(quantized, CV_8S, input_scale, 0);
+    quantize_neon(rgb.data, data, input_scale, width * height * 3);
     auto t4 = chrono::high_resolution_clock::now();
     // 4) メモリコピー
-    std::memcpy(data, quantized.data, width * height * 3);
-    auto t5 = chrono::high_resolution_clock::now();
+    // std::memcpy(data, quantized.data, width * height * 3);
+    // auto t5 = chrono::high_resolution_clock::now();
 }
 
 class YoloContext
@@ -384,7 +389,7 @@ public:
     }
 
     Mat infer(const imagePair ip) // 推論 + メトリクス
-    {                                                       
+    {
         auto t0 = chrono::high_resolution_clock::now();
         Mat frame = ip.second;
         int index = ip.first;
@@ -398,7 +403,7 @@ public:
         // ポスト処理へ
         std::vector<int8_t *> results = {result0, result1, result2};
         postProcess_OpenCV(frame, results, shapes, conf_output_scale,
-                                            shapes.inTensorList[0].height, shapes.inTensorList[0].width);
+                           shapes.inTensorList[0].height, shapes.inTensorList[0].width);
         auto t4 = chrono::high_resolution_clock::now();
         auto setInput_dur = duration_cast<microseconds>(t1 - t0).count();
         auto execute_dur = duration_cast<microseconds>(t2 - t1).count();
@@ -409,7 +414,7 @@ public:
         auto wait_start = (duration_cast<microseconds>(t2 - program_start)).count();
         auto postProcess_start = (duration_cast<microseconds>(t3 - program_start)).count();
         logger.logRow("setInputPointer", {index, setInput_start, setInput_dur});
-        logger.logRow("pre_process", {index,  execute_start, 0});
+        logger.logRow("pre_process", {index, execute_start, 0});
         logger.logRow("exec_async", {index, execute_start, execute_dur});
         logger.logRow("wait", {index, wait_start, wait_dur});
         logger.logRow("post_process", {index, postProcess_start, postProcess_dur});
@@ -434,7 +439,8 @@ private:
 void runYOLO(vart::Runner *runner, concurrent_queue<imagePair> &in, concurrent_queue<imagePair> &out)
 {
     static YoloContext yoloContext(runner, shapes);
-    while(bReading || !in.empty()){
+    while (bReading || !in.empty())
+    {
         imagePair pairIndexImage = in.pop();
         pairIndexImage.second = yoloContext.infer(pairIndexImage);
         out.push(pairIndexImage);
@@ -446,6 +452,8 @@ int main(const int argc, const char **argv)
 {
     program_start = chrono::high_resolution_clock::now();
     cout << "concurrency = " << std::thread::hardware_concurrency() << std::endl;
+    // set OpenCV thread = 1
+    cv::setNumThreads(1);
     // Check args
     if (argc != 3)
     {
@@ -471,7 +479,7 @@ int main(const int argc, const char **argv)
     //     vart::Runner::create_runner(subgraph[0], "run");
     // auto runner3 =
     //     vart::Runner::create_runner(subgraph[0], "run");
-    
+
     auto inputTensors = runner->get_input_tensors();
     auto outputTensors = runner->get_output_tensors();
 
@@ -485,15 +493,17 @@ int main(const int argc, const char **argv)
 
     concurrent_queue<imagePair> fr(30), shw(30);
 
-    array<thread, 4> threadsList = {
+    array<thread, 3> threadsList = {
         thread(readFrame, argv[2], ref(fr)),
         thread(displayFrame, ref(shw)),
         thread(runYOLO, runner.get(), ref(fr), ref(shw)),
-        thread(runYOLO, runner1.get(), ref(fr), ref(shw)),
+        // thread(runYOLO, runner1.get(), ref(fr), ref(shw)),
     };
 
-    for (auto &t : threadsList) {
-        if (t.joinable()) t.join();
+    for (auto &t : threadsList)
+    {
+        if (t.joinable())
+            t.join();
     }
 
     return 0;
