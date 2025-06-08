@@ -56,7 +56,11 @@ $CXX -O2 -fno-inline -I. \
      -lglog \
      -lxir \
      -lunilog \
-     -lpthread
+     -lpthread \
+     -lavutil \
+     -lavformat \
+     -lavcodec \
+     -lswscale
 else
 $CXX -O2 -fno-inline -I. \
      -I${install_prefix_default}.Debug/include \
@@ -79,5 +83,9 @@ $CXX -O2 -fno-inline -I. \
      -lglog \
      -lxir \
      -lunilog \
-     -lpthread
+     -lpthread \
+     -lavutil \
+     -lavformat \
+     -lavcodec \
+     -lswscale
 fi

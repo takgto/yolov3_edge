@@ -13,6 +13,12 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <opencv2/opencv.hpp>
+extern "C" {
+#include <libavformat/avformat.h>
+#include <libavcodec/avcodec.h>
+#include <libswscale/swscale.h>
+#include <libavutil/imgutils.h>
+}
 
 // new include file related to thread handlig
 #include <future>
@@ -69,9 +75,42 @@ public:
     }
 };
 
+
+typedef tuple<int, Mat, Mat> imageTuple; // tuple of index, resized image, original image
+class tuplecomp
+{
+public:
+    bool operator()(const imageTuple &n1, const imageTuple &n2) const
+    {
+        if (get<0>(n1) == get<0>(n2))
+        {
+            return (get<0>(n1) > get<0>(n2));
+        }
+
+        return get<0>(n1) > get<0>(n2);
+    }
+};
+
+typedef tuple<int, Mat*, vector<int8_t>*> imageTupleInfer; // tuple of index, input image, output vector
+class tupleInfercomp
+{
+public:
+    bool operator()(const imageTupleInfer &n1, const imageTupleInfer &n2) const
+    {
+        if (get<0>(n1) == get<0>(n2))
+        {
+            return (get<0>(n1) > get<0>(n2));
+        }
+
+        return get<0>(n1) > get<0>(n2);
+    }
+};
+
 queue<imagePair> queueInput; // queue of FIFO
+queue<imageTuple> queueInputTuple; // queue of FIFO for tuple
 // display frames queue
 priority_queue<imagePair, vector<imagePair>, paircomp> queueShow; // priority queue by index comp.
+// priority_queue<imageTuple, vector<imageTupleInfer>, tupleInfercomp> queueShowTuple; // priority queue by index comp. for tuple
 
 GraphInfo shapes;
 TensorShape inshapes[1];
@@ -170,24 +209,126 @@ void readFrame(const char *fileName, concurrent_queue<imagePair> &out)
     bReading = false; // set to false when reading is done
 }
 
-void readOneFrame(VideoCapture &video, concurrent_queue<imagePair> &out, int &idxInputImage)
-{
-    // ScopeTimer timer_read("readOneFrame"); // start timer for readOneFrame function
-    auto t0 = chrono::high_resolution_clock::now();
-    Mat img;
-    if (!video.read(img))
-    {
-        cout << "End of video stream." << endl;
+void quantize_u8c3_to_i8c3_neon_optimized(const Mat& in, Mat& out);
+
+static int fromTo[] = {0,2 , 1, 1, 2, 0}; // BGR to RGB
+
+void readAndPreprocess(const char *fileName, concurrent_queue<imageTuple> &out) {
+    static int loop = 1; // video end of three times play
+
+    start_time = chrono::system_clock::now();
+
+    int width = shapes.inTensorList[0].width;
+    int height = shapes.inTensorList[0].height;
+    int size = shapes.inTensorList[0].size;
+
+    // 初期化
+    avformat_network_init();
+    AVFormatContext* fmt_ctx = nullptr;
+    if (avformat_open_input(&fmt_ctx, fileName, nullptr, nullptr) < 0) {
+        std::cerr << "Failed to open input: " << fileName << std::endl;
         return;
     }
+    avformat_find_stream_info(fmt_ctx, nullptr);
+    int vid_stream = av_find_best_stream(fmt_ctx,
+                                         AVMEDIA_TYPE_VIDEO,
+                                         -1, -1, nullptr, 0);
+    AVCodecParameters* p = fmt_ctx->streams[vid_stream]->codecpar;
+    AVCodec* dec = avcodec_find_decoder(p->codec_id);
+    AVCodecContext* dec_ctx = avcodec_alloc_context3(dec);
+    avcodec_parameters_to_context(dec_ctx, p);
+    // マルチスレッドデコード
+    dec_ctx->thread_count = 2;
+    dec_ctx->thread_type  = FF_THREAD_FRAME;
+    avcodec_open2(dec_ctx, dec, nullptr);
 
-    auto pair = make_pair(idxInputImage, img);
-    out.push(pair);
-    auto t1 = chrono::high_resolution_clock::now();
-    auto read_dur = duration_cast<microseconds>(t1 - t0).count();
-    auto read_start = (duration_cast<microseconds>(t1 - program_start)).count();
-    logger.logRow("readFrame", {pair.first, read_start, read_dur});
+    // 変換コンテキスト
+    SwsContext* sws_ctx = sws_getContext(
+        dec_ctx->width, dec_ctx->height, dec_ctx->pix_fmt,
+        dec_ctx->width, dec_ctx->height, AV_PIX_FMT_BGR24,
+        SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
+
+    // 入出力フレーム／パケット
+    AVPacket* pkt = av_packet_alloc();
+    AVFrame* frame = av_frame_alloc();
+    AVFrame* rgbf = av_frame_alloc();
+    int rgb_buf_size = av_image_get_buffer_size(
+        AV_PIX_FMT_BGR24,
+        dec_ctx->width, dec_ctx->height, 1);
+    std::vector<uint8_t> rgbbuf(rgb_buf_size);
+    av_image_fill_arrays(rgbf->data, rgbf->linesize,
+                         rgbbuf.data(), AV_PIX_FMT_BGR24,
+                         dec_ctx->width, dec_ctx->height, 1);
+
+    // OpenCV 出力 Mat
+    cv::Mat image2(Size(width, height), CV_8UC3);
+    cv::Mat rgb(Size(width, height), CV_8UC3);
+    int idxInputImage = 0;
+
+
+    while (av_read_frame(fmt_ctx, pkt) >= 0) {
+        if (pkt->stream_index == vid_stream) {
+            avcodec_send_packet(dec_ctx, pkt);
+            while (avcodec_receive_frame(dec_ctx, frame) == 0) {
+                auto t0 = chrono::high_resolution_clock::now();
+                Mat image(Size(dec_ctx->width, dec_ctx->height), CV_8UC3);
+                // YUV -> BGR24
+                sws_scale(sws_ctx,
+                          frame->data, frame->linesize, 0,
+                          dec_ctx->height,
+                          rgbf->data, rgbf->linesize);
+                memcpy(image.data, rgbbuf.data(), rgb_buf_size);
+                auto t1 = chrono::high_resolution_clock::now();
+                // リサイズ・チャンネル変換・量子化
+                cv::resize(image, image2,
+                           cv::Size(width, height),
+                           0,0, cv::INTER_NEAREST);
+                auto t2 = chrono::high_resolution_clock::now();
+                cv::mixChannels(&image2, 1, &rgb, 1, fromTo, 3);
+                auto t3 = chrono::high_resolution_clock::now();
+                Mat quantized(Size(width, height), CV_8SC3);
+                quantize_u8c3_to_i8c3_neon_optimized(rgb, quantized);
+                auto t4 = chrono::high_resolution_clock::now();
+
+                // キューにプッシュ
+                out.push(std::make_tuple(idxInputImage++,
+                                         std::move(quantized),
+                                         image));
+                auto t5 = chrono::high_resolution_clock::now();
+
+                auto read_dur = duration_cast<microseconds>(t1 - t0).count();
+                // auto grab_dur = duration_cast<microseconds>(t0_1 - t0).count();
+                // auto retrieve_dur = duration_cast<microseconds>(t1 - t0_1).count();
+                auto resize_dur = duration_cast<microseconds>(t2 - t1).count();
+                auto bgr2rgb_dur = duration_cast<microseconds>(t3 - t2).count();
+                auto quantize_dur = duration_cast<microseconds>(t4 - t3).count();
+                auto push_dur = duration_cast<microseconds>(t5 - t4).count();
+
+                auto read_start = (duration_cast<microseconds>(t0 - program_start)).count();
+                logger.logRow("0_readFrame", {idxInputImage, read_start, read_dur});
+                logger.logRow("1_resize", {idxInputImage, read_start + read_dur, resize_dur});
+                logger.logRow("2_bgr2rgb", {idxInputImage, read_start + read_dur + resize_dur, bgr2rgb_dur});
+                logger.logRow("3_quantize", {idxInputImage, read_start + read_dur + resize_dur + bgr2rgb_dur, quantize_dur});
+                logger.logRow("4_push", {idxInputImage, read_start + read_dur + resize_dur + bgr2rgb_dur + quantize_dur, push_dur});
+            }
+        }
+        av_packet_unref(pkt);
+    }
+    // push a sentinel value to indicate end of stream
+    out.push(make_tuple(-1, Mat(), Mat()));
+    out.push(make_tuple(-1, Mat(), Mat()));
+    bReading = false; // set to false when reading is done 
+    
+    // クリーンアップ
+    av_frame_free(&frame);
+    av_frame_free(&rgbf);
+    av_packet_free(&pkt);
+    sws_freeContext(sws_ctx);
+    avcodec_free_context(&dec_ctx);
+    avformat_close_input(&fmt_ctx);
+    avformat_network_deinit();
 }
+
 
 void displayFrame(concurrent_queue<imagePair> &in)
 {
@@ -230,162 +371,35 @@ void displayFrame(concurrent_queue<imagePair> &in)
         auto t1 = chrono::high_resolution_clock::now();
         auto display_dur = duration_cast<microseconds>(t1 - t0).count();
         auto display_start = (duration_cast<microseconds>(t0 - program_start)).count();
-        logger.logRow("displayFrame", {index, display_start, display_dur});
+        logger.logRow("11_displayFrame", {index, display_start, display_dur});
     }
     cv::destroyAllWindows();
 }
 
-void displayOneFrame(concurrent_queue<imagePair> &in)
+void postProcess_OpenCV(int &idxInputImage, const Mat &frame, const vector<int8_t *> &out, 
+                        const GraphInfo &shapes, const float &scale, const int &sHeight, const int &sWidth)
 {
-    // ScopeTimer timer_display("displayOnFrame"); // start timer for displayOnFrame function
-    static const int fontFace = FONT_HERSHEY_SIMPLEX;
-    static const double fontScale = 1.0;
-    static const int thickness = 1;
-    static const Scalar color{0,0,240};
-    char buf[32];
-
-    auto t0 = chrono::high_resolution_clock::now();
-    auto pairIndexImg = in.pop();
-    Mat frame = pairIndexImg.second;
-    int index = pairIndexImg.first;
-    if (frame.rows <= 0 || frame.cols <= 0)
-    {
-        cout << "Invalid frame size: " << frame.rows << "x" << frame.cols << endl;
-        return;
-    }
-
-    auto show_time = chrono::system_clock::now();
-    auto dura = (duration_cast<microseconds>(show_time - start_time)).count();
-    double fps = index / (dura * 1e-6);
-    std::snprintf(buf, sizeof(buf), "%.1f FPS", fps);
-    cv::putText(frame, buf, Point(10, 15),
-                fontFace, fontScale, color, thickness);
-
-    // imwrite("result.jpg", frame);
-    imshow("YOLOv3 Detection@Xilinx DPU", frame);
-    waitKey(1);
-    auto t1 = chrono::high_resolution_clock::now();
-    auto display_dur = duration_cast<microseconds>(t1 - t0).count();
-    auto display_start = (duration_cast<microseconds>(t0 - program_start)).count();
-    logger.logRow("displayFrame", {index, display_start, display_dur});
-}
-
-Mat post_process(const Mat &frame, const vector<int8_t *> &out, const GraphInfo &shapes, const float &scale, const int &sHeight, const int &sWidth)
-{
+    auto t0 = chrono::system_clock::now();
     // sHeight, sWidth = 416, 416
-    auto img = frame.clone();
     vector<vector<float>> boxes;
-    char fname[256];
-    const int outSize = out.size();
-    for (size_t i = 0; i < outSize; i++)
+    for (size_t i = 0; i < out.size(); ++i)
     {
         int channel = shapes.outTensorList[i].channel;
         int width = shapes.outTensorList[i].width;
         int height = shapes.outTensorList[i].height;
         int sizeOut = shapes.outTensorList[i].size;
-        // cout << "width, height = " << width << ", " << height << endl; // debug
-        // cout << "channel, sizeOut = " << channel << ", " << sizeOut << endl; // debug
-
-        vector<float> result(sizeOut);
-        boxes.reserve(sizeOut);
-
-        /* Store every output node results */
-        // scaling_cast(out[i], scale, result);
-
-        detect(boxes, out[i], channel, height, width, i, sHeight, sWidth, scale);
-
-        /* debug
-        sprintf(fname, "out%d.dat", i);
-        cout << "binary file output : " << fname << endl;
-        cout << "" << endl;
-
-        write_binary(fname, result);
-        */
-    }
-    /* Restore the correct coordinate frame of the original image */
-    if (Lbox_on)
-    {
-        // cout << "Lbox_on" << endl;                    // debug
-        // cout << img.cols << ", " << img.rows << endl; // debug
-        // cout << sWidth << ", " << sHeight << endl;    // debug
-        correct_region_boxes(boxes, boxes.size(), img.cols, img.rows, sWidth, sHeight);
-        // for (size_t i = 0; i < boxes.size(); ++i)
-        // {
-        //     cout << boxes[i][0] << ", " << boxes[i][1] << endl; // debug
-        //     cout << boxes[i][2] << ", " << boxes[i][3] << endl; // debug
-        // }
-    }
-    /* Apply the computation for NMS */
-    // cout << "boxes size: " << boxes.size() << endl; // debug
-    vector<vector<float>> res = applyNMS(boxes, classificationCnt, NMS_THRESHOLD);
-
-    // cout << "boxes size after NMS: " << res.size() << endl;
-    // cout << "class conf, class, xmin, ymin, xmax, ymax" << endl;
-    float h = img.rows;
-    float w = img.cols;
-    for (size_t i = 0; i < res.size(); ++i)
-    {
-        float xmin = (res[i][0] - res[i][2] / 2.0) * w + 1.0;
-        float ymin = (res[i][1] - res[i][3] / 2.0) * h + 1.0;
-        float xmax = (res[i][0] + res[i][2] / 2.0) * w + 1.0;
-        float ymax = (res[i][1] + res[i][3] / 2.0) * h + 1.0;
-
-        // cout<<res[i][res[i][4] + 6]<<" "; // (res[i][4]=class#)+6(offset) means class_score due to the results of apply NMS.
-        // cout<<res[i][4] << " "; // most confident class number
-        // cout<<xmin<<" "<<ymin<<" "<<xmax<<" "<<ymax<<endl;
-
-        if (res[i][res[i][4] + 6] > CONF)
-        {
-            int type = res[i][4];
-
-            if (type == 0)
-            {
-                rectangle(img, Point(xmin, ymin), Point(xmax, ymax),
-                          Scalar(0, 0, 255), 1, 1, 0);
-            }
-            else if (type == 1)
-            {
-                rectangle(img, Point(xmin, ymin), Point(xmax, ymax),
-                          Scalar(255, 0, 0), 1, 1, 0);
-            }
-            else
-            {
-                rectangle(img, Point(xmin, ymin), Point(xmax, ymax),
-                          Scalar(0, 255, 255), 1, 1, 0);
-            }
-        }
-    }
-    return img;
-}
-
-void postProcess_OpenCV(const Mat &frame, const vector<int8_t *> &out, const GraphInfo &shapes,
-                       const float &scale, const int &sHeight, const int &sWidth)
-{
-    // auto t0 = chrono::system_clock::now();
-    // sHeight, sWidth = 416, 416
-    vector<vector<float>> boxes;
-    for (size_t i = 0; i < out.size(); i++)
-    {
-        int channel = shapes.outTensorList[i].channel;
-        int width = shapes.outTensorList[i].width;
-        int height = shapes.outTensorList[i].height;
-        int sizeOut = shapes.outTensorList[i].size;
-        // cout << "channel, width, height = " << channel << ", " << width << ", " << height << endl; // debug
-        // cout << "sizeOut = " << sizeOut << endl; // debug
         vector<float> result(sizeOut);
         boxes.reserve(sizeOut);
            
         detect_yolov5(boxes, out[i], channel, height, width, i, sHeight, sWidth, scale);
-        // detect(boxes, out[i], channel, height, width, i, sHeight, sWidth, scale);
-        // detect_yolov4(boxes, out[i], channel, height, width, i, sHeight, sWidth, scale);
     }
 
-    // auto t1 = chrono::system_clock::now();
+    auto t1 = chrono::system_clock::now();
 
     /* Apply the computation for NMS */
     vector<vector<float>> res = applyNMS(boxes, classificationCnt, NMS_THRESHOLD);
 
-    // auto t2 = chrono::system_clock::now();
+    auto t2 = chrono::system_clock::now();
 
     float h = frame.rows;
     float w = frame.cols;
@@ -417,62 +431,66 @@ void postProcess_OpenCV(const Mat &frame, const vector<int8_t *> &out, const Gra
             }
         }
     }
-    // return img;
+    auto t3 = chrono::system_clock::now();
+    auto post_detect = duration_cast<microseconds>(t1 - t0).count();
+    auto nms_dur = duration_cast<microseconds>(t2 - t1).count();
+    auto draw_dur = duration_cast<microseconds>(t3 - t2).count();
+    auto post_start = (duration_cast<microseconds>(t0 - program_start)).count();
+    logger.logRow("8_detect", {idxInputImage, post_start, post_detect});
+    logger.logRow("9_nms", {idxInputImage, post_start + post_detect, nms_dur});
+    logger.logRow("10_draw", {idxInputImage, post_start + post_detect + nms_dur, draw_dur});
 }
 
-// void quantize_neon(const float *src, int8_t *dst, float scale, size_t len)
-// {
-//     size_t i = 0;
-//     float32x4_t vscale = vdupq_n_f32(scale);
-
-//     for (; i + 4 <= len; i += 4)
-//     {
-//         // 1) load 4 floats
-//         float32x4_t fv = vld1q_f32(src + i);
-//         // 2) scale
-//         float32x4_t fvq = vmulq_f32(fv, vscale);
-//         // 3) float→int32 saturate
-//         int32x4_t vi32 = vcvtq_s32_f32(fvq);
-//         // 4) int32→int16, saturate
-//         int16x4_t vi16 = vqmovn_s32(vi32);
-//         // 5) int16→int8, saturate (8 lanes but we only need 4)
-//         int8x8_t vi8 = vqmovn_s16(vcombine_s16(vi16, vi16));
-//         // 6) store lower 4 bytes
-//         vst1_s8(dst + i, vget_low_s8(vi8));
-//     }
-
-//     for (; i < len; ++i) {
-//         int32_t q = (int32_t)roundf(src[i]*scale);
-//         dst[i] = static_cast<int8_t>(std::max(-128, std::min(127, q)));
-//     }
-// }
-
-// original setInputPointer function
-void setInputPointer(const Mat &frame, int8_t *data,
-                     const int &scale)
+void quantize_u8c3_to_i8c3_neon_optimized(const Mat& in, Mat& out)
 {
-    int width = shapes.inTensorList[0].width;
-    int height = shapes.inTensorList[0].height;
-    int size = shapes.inTensorList[0].size;
+    const int rows = in.rows;
+    const int cols = in.cols;
+    // 1行あたりの総バイト数：cols × 3 (チャンネル数)
+    const int width_bytes = cols * 3;
 
-    Mat img = frame.clone();
-    cvtColor(img, img, cv::COLOR_BGR2RGB);
-    Mat image2 = cv::Mat(height, width, CV_8SC3); // CV_8SC3 means 3ch singed char data type
-    cv::resize(img, image2, Size(width, height), 0, 0, cv::INTER_LINEAR);
-
-    // unsigned char* imdata = img.data;
-    unsigned char *imdata = image2.data;
-    for (int i = 0; i < size; ++i)
+    for (int y = 0; y < rows; y++)
     {
-        float dataf = static_cast<float>(imdata[i]);
-        data[i] = static_cast<int>((dataf * static_cast<float>(scale) / 256.0));
-        if (data[i] < 0)
-            data[i] = 127;
+        // 行の先頭アドレスを取得
+        const uint8_t*  in_ptr  = in.ptr<uint8_t>(y);
+        int8_t*         out_ptr = out.ptr<int8_t>(y);
+
+        int remaining = width_bytes;
+        while (remaining >= 32)
+        {
+
+            uint8x16_t vin1 = vld1q_u8(in_ptr);
+            uint8x16_t vin2 = vld1q_u8(in_ptr + 16);
+            uint8x16_t vq1 = vshrq_n_u8(vin1, 1);
+            uint8x16_t vq2 = vshrq_n_u8(vin2, 1);
+
+            vst1q_s8(out_ptr,         vreinterpretq_s8_u8(vq1));
+            vst1q_s8(out_ptr + 16,    vreinterpretq_s8_u8(vq2));
+
+            // ポインタを 32 バイトだけ進める
+            in_ptr  += 32;
+            out_ptr += 32;
+            remaining -= 32;
+        }
+        if (remaining >= 16)
+        {
+            uint8x16_t vin = vld1q_u8(in_ptr);
+            uint8x16_t vq  = vshrq_n_u8(vin, 1);
+            vst1q_s8(out_ptr, vreinterpretq_s8_u8(vq));
+
+            in_ptr  += 16;
+            out_ptr += 16;
+            remaining -= 16;
+        }
+        for (int i = 0; i < remaining; i++)
+        {
+            // 1ビット右シフトして 0..127 に量子化
+            *out_ptr++ = static_cast<int8_t>((*in_ptr++) >> 1);
+        }
     }
 }
 
+
 // OpenCV version of setInputPointer function
-static int fromTo[] = {0,2 , 1, 1, 2, 0}; // BGR to RGB
 void setInputPointer_OpenCV(const Mat &frame, int8_t *data,
                                  float input_scale)
 {
@@ -489,11 +507,12 @@ void setInputPointer_OpenCV(const Mat &frame, int8_t *data,
     quantized .create(Size(width,height), CV_8SC3);
 
     image = frame.clone();
-    cv::resize(image, image2, Size(width, height), 0, 0, cv::INTER_LINEAR);
+    cv::resize(image, image2, Size(width, height), 0, 0, cv::INTER_NEAREST);
     mixChannels(&image2, 1, &rgb, 1, fromTo, 3); // BGR to RGB conversion
 
     // 3) scale を反映しつつ int8 へ量子化, padding
-    rgb.convertTo(quantized, CV_8S, input_scale / 128.0, 0); // 128 ? 256 ?
+    // rgb.convertTo(quantized, CV_8S, input_scale / 128.0, 0); // 128 ? 256 ?
+    quantize_u8c3_to_i8c3_neon_optimized(rgb, quantized);
     // 4) メモリコピー
     std::memcpy(data, quantized.data, width * height * 3);
 }
@@ -563,7 +582,7 @@ public:
 
         // ポスト処理へ
         std::vector<int8_t *> results = {result0, result1, result2};
-        postProcess_OpenCV(frame, results, shapes, conf_output_scale,
+        postProcess_OpenCV(index, frame, results, shapes, conf_output_scale,
                                             shapes.inTensorList[0].height, shapes.inTensorList[0].width);
         auto t4 = chrono::high_resolution_clock::now();
         auto setInput_dur = duration_cast<microseconds>(t1 - t0).count();
@@ -582,6 +601,37 @@ public:
         return frame;
     }
 
+    Mat inferNoPreProc(const imageTuple it)
+    {
+        auto t0 = chrono::high_resolution_clock::now();
+        int index = get<0>(it);
+        Mat processedImage = get<1>(it); // get the processed image
+        Mat frame = get<2>(it); // get the original image
+        std::memcpy(imageInputs, processedImage.data, inSize);
+        auto t1 = chrono::high_resolution_clock::now();
+        auto job_id = runner->execute_async(inputsPtr, outputsPtr);
+        auto t2 = chrono::high_resolution_clock::now();
+        runner->wait(job_id.first, -1);
+        auto t3 = chrono::high_resolution_clock::now();
+        // ポスト処理へ
+        std::vector<int8_t *> results = {result0, result1, result2};
+        postProcess_OpenCV(index, frame, results, shapes, conf_output_scale,
+                                            shapes.inTensorList[0].height, shapes.inTensorList[0].width);
+        auto t4 = chrono::high_resolution_clock::now();
+
+        auto memcpy_dur = duration_cast<microseconds>(t1 - t0).count();
+        auto execute_dur = duration_cast<microseconds>(t2 - t1).count();
+        auto wait_dur = duration_cast<microseconds>(t3 - t2).count();
+        auto memcpy_start = (duration_cast<microseconds>(t0 - program_start)).count();
+        auto execute_start = (duration_cast<microseconds>(t1 - program_start)).count();
+        auto wait_start = (duration_cast<microseconds>(t2 - program_start)).count();
+        logger.logRow("5_memcpy", {index, memcpy_start, memcpy_dur});
+        logger.logRow("6_exec_async", {index, execute_start, execute_dur});
+        logger.logRow("7_wait", {index, wait_start, wait_dur});
+        
+        return frame;
+    }
+
 private:
     vart::Runner *runner;
     GraphInfo shapes;
@@ -597,18 +647,18 @@ private:
     float conf_output_scale;
 };
 
-void runYOLO(vart::Runner *runner, concurrent_queue<imagePair> &in, concurrent_queue<imagePair> &out)
+void runYOLO(vart::Runner *runner, concurrent_queue<imageTuple> &in, concurrent_queue<imagePair> &out)
 {
     static YoloContext yoloContext(runner, shapes);
     while(bReading || !in.empty()){
-        imagePair pairIndexImage = in.pop();
-        if (pairIndexImage.first == -1)
+        imageTuple tupleIndexImage = in.pop();
+        int index = get<0>(tupleIndexImage);
+        if (index == -1)
         {
             // cout << "End of video stream." << endl; // debug
             break;
         }
-        pairIndexImage.second = yoloContext.infer(pairIndexImage);
-        out.push(pairIndexImage);
+        out.push(make_pair(index, yoloContext.inferNoPreProc(tupleIndexImage)));     
     }
     out.push(make_pair(-1, Mat())); // push a dummy frame to signal end of processing
     bInfer = false; // set to false when reading is done
@@ -618,9 +668,6 @@ int main(const int argc, const char **argv)
 {
     program_start = chrono::high_resolution_clock::now();
     cout << "concurrency = " << std::thread::hardware_concurrency() << std::endl;
-    // set OpenCV thread = 1
-    cv::setNumThreads(2); // OpenCV uses multiple threads by default, set to 1 for single thread
-    // Check args
     if (argc != 3)
     {
         cout << "Usage of yolov3: ./resnet50 [model_file] [jpg image]" << endl;
@@ -641,10 +688,6 @@ int main(const int argc, const char **argv)
         vart::Runner::create_runner(subgraph[0], "run");
     auto runner1 =
         vart::Runner::create_runner(subgraph[0], "run");
-    // auto runner2 =
-    //     vart::Runner::create_runner(subgraph[0], "run");
-    // auto runner3 =
-    //     vart::Runner::create_runner(subgraph[0], "run");
     
     auto inputTensors = runner->get_input_tensors();
     auto outputTensors = runner->get_output_tensors();
@@ -656,15 +699,15 @@ int main(const int argc, const char **argv)
     shapes.inTensorList = inshapes;
     shapes.outTensorList = outshapes; // get output size
     getTensorShape(runner.get(), &shapes, inputCnt, outputCnt);
-    // cout << "Input Cnt: " << inputCnt << ", Output Cnt: " << outputCnt << endl;
 
-    concurrent_queue<imagePair> fr(50), shw(50);
+    concurrent_queue<imageTuple> fr(20);
+    concurrent_queue<imagePair> shw(20); // display queue
 
-    array<thread, 3> threadsList = {
-        thread(readFrame, argv[2], ref(fr)),
+    array<thread, 4> threadsList = {
+        thread(readAndPreprocess, argv[2], ref(fr)),
         thread(displayFrame, ref(shw)),
         thread(runYOLO, runner.get(), ref(fr), ref(shw)),
-        // thread(runYOLO, runner1.get(), ref(fr), ref(shw)),
+        thread(runYOLO, runner1.get(), ref(fr), ref(shw)),
     };
     // imshow("YOLOv3 Detection@Xilinx DPU", Mat::zeros(416, 416, CV_8UC3));
     // waitKey(1); // wait for 1 ms to show the initial frame

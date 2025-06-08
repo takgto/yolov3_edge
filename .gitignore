@@ -2,4 +2,7 @@
 cpp/cpp
 /benchmark/*_test/
 /benchmark/*_benchmark_*/
+/benchmark/mAP/all
+/benchmark/mAP/samples
 /xmodel
+

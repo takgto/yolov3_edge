@@ -31,7 +31,19 @@ def calculate_statistics(csv_dir, output_dir):
         # get the last frame number
         first_readFrame_time = temp_df[temp_df['func'] == '0_readFrame']['start'].min()
         max_frame = temp_df['frame'].max()
-        last_display_time = temp_df[temp_df['func'] == '9_displayFrame']['start'].max()
+        # looking for the last displayFrame time, but prefix is not sure, find it by func name
+        func_names = temp_df['func'].unique()
+        if len(func_names) == 0:
+            print(f'No valid function names found in {csv_path}.')
+            continue
+        # find the name which ends with '_displayFrame'
+        display_func = [name for name in func_names if name.endswith('_displayFrame')]
+        if not display_func:
+            print(f'No display function found in {csv_path}.')
+            continue
+        display_func = display_func[0]
+        
+        last_display_time = temp_df[temp_df['func'] == display_func]['start'].max()
 
         average_fps = max_frame / (last_display_time - first_readFrame_time) * 1e6  # Convert to FPS
         print(f'Average FPS for {csv_path}: {average_fps:.2f}')

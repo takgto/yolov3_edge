@@ -64,9 +64,27 @@ done
 
 # 3.
 echo "3. calculate the fps and execute time stats"
-example_video="traffic1"
+example_video="traffic2"
 python3 "../benchmark/stats.py" "${benchmark_dir}/"
 python3 "../benchmark/gantt_chart.py" "${benchmark_dir}/${example_video}_result.csv" --frames 30
 python3 "../benchmark/box_plot.py" "${benchmark_dir}/${example_video}_result.csv"
+
+# # 4. mAP@0.5
+# echo "4. mAP@0.5"
+# g++ "-O2 -fno-inline -I. -I /usr/include/opencv4 -I../common \
+#         yolov5_files_base.cpp \
+#         ../common/common.cpp \
+#         -o calc_mAP \
+#         -lopencv_videoio \
+#         -lopencv_imgcodecs \
+#         -lopencv_highgui  \
+#         -lopencv_imgproc  \
+#         -lopencv_core \
+#         -lvart-runner \
+#         -lxir \
+#         -lpthread \
+#         -lglog"
+# ./calc_mAP "${xmodel_file}" "..benchmark/mAP/samples" >> "${benchmark_dir}/meta.txt"
+
 
 echo "Done. results in $benchmark_dir"

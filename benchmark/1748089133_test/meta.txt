@@ -1,5 +1,0 @@
-cpp_file: yolov3_video_study_bench.cpp
-xmodel_file: dpu_yolov3.xmodel
-../test/1748089133_test//traffic2_result.csv: 13.85 FPS
-../test/1748089133_test//traffic1_result.csv: 13.78 FPS
-../test/1748089133_test//adas_result.csv: 13.78 FPS
