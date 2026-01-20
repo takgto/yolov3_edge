@@ -258,7 +258,7 @@ Mat post_process(const Mat& frame, const vector<int8_t*>& out, const GraphInfo& 
             }
         }
     }
-		return img;
+    return img;
 }
 
 void setInputImageForYOLO(const Mat& frame, int8_t* data, 
