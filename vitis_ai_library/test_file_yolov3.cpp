@@ -44,7 +44,20 @@ int main(int argc, char* argv[]) {
   }
   string str;
 
+  // 全行数を数えて進捗表示に使用
+  int total_lines = 0;
+  {
+      string tmp;
+      ifstream ifs_count(argv[2]);
+      while (getline(ifs_count, tmp)) total_lines++;
+  }
+  int current = 0;
+
   while (getline(ifs, str)) {
+      current++;
+      cout << "\r[" << current << "/" << total_lines << "] "
+           << (current * 100 / total_lines) << "% " << flush;
+
       //cout << str << endl;
       size_t eth = str.find_last_of(".");
       //cout << "eth = " << eth << endl;
@@ -81,5 +94,6 @@ int main(int argc, char* argv[]) {
       }
 
   }
+  cout << endl << "Done. " << current << " images processed." << endl;
   return 0;
 }
