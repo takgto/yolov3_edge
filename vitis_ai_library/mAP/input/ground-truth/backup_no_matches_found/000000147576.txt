@@ -1,0 +1,6 @@
+bicycle 69 253 160 320
+car 232 239 425 318
+bicycle 57 273 71 288
+bicycle 45 284 86 322
+bicycle 39 260 55 275
+bicycle 21 258 102 318
